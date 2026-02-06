@@ -1,0 +1,30 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python3:*)",
+      "Bash(pytest:*)",
+      "Bash(git status:*)",
+      "Bash(git log:*)",
+      "Bash(git diff:*)",
+      "Bash(git branch:*)",
+      "Bash(git add:*)",
+      "Bash(git commit:*)",
+      "Bash(git checkout:*)",
+      "Bash(git push:*)",
+      "Bash(git show:*)",
+      "Bash(git stash:*)",
+      "Bash(black:*)",
+      "Bash(isort:*)",
+      "Bash(flake8:*)",
+      "Bash(uv:*)",
+      "Bash(pip list:*)",
+      "Bash(pip show:*)",
+      "mcp__stompy__*",
+      "mcp__llm-gateway__*"
+    ],
+    "deny": [
+      "Read(./.env.*)",
+      "Read(./secrets/**)"
+    ]
+  }
+}
