@@ -191,7 +191,7 @@ def register_ticketing_tools(
             return json.dumps({"error": str(e), "error_type": "ValueError"})
         except Exception as e:
             return json.dumps(
-                {"error": f"Ticket operation failed: {str(e)[:200]}", "error_type": type(e).__name__}
+                {"error": f"Ticket operation failed: {str(e)[:200]}", "error_type": e.__class__.__name__}
             )
 
     @mcp_instance.tool()
@@ -269,7 +269,7 @@ def register_ticketing_tools(
 
         except Exception as e:
             return json.dumps(
-                {"error": f"Link operation failed: {str(e)[:200]}", "error_type": type(e).__name__}
+                {"error": f"Link operation failed: {str(e)[:200]}", "error_type": e.__class__.__name__}
             )
 
     @mcp_instance.tool()
@@ -306,7 +306,7 @@ def register_ticketing_tools(
 
         except Exception as e:
             return json.dumps(
-                {"error": f"Board view failed: {str(e)[:200]}", "error_type": type(e).__name__}
+                {"error": f"Board view failed: {str(e)[:200]}", "error_type": e.__class__.__name__}
             )
 
     @mcp_instance.tool()
@@ -349,5 +349,5 @@ def register_ticketing_tools(
 
         except Exception as e:
             return json.dumps(
-                {"error": f"Search failed: {str(e)[:200]}", "error_type": type(e).__name__}
+                {"error": f"Search failed: {str(e)[:200]}", "error_type": e.__class__.__name__}
             )
