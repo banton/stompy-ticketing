@@ -668,12 +668,17 @@ class TicketService:
             query=query,
         )
 
+    # Maximum description length in board view responses (chars).
+    # Full descriptions are only returned via individual ticket reads.
+    BOARD_DESC_MAX_LENGTH = 200
+
     def board_view(
         self,
         conn: DBConnection,
         schema: str,
         type_filter: Optional[str] = None,
         view: str = "kanban",
+        status_filter: Optional[str] = None,
     ) -> BoardView:
         """Get a kanban board view of tickets grouped by status.
 
@@ -681,18 +686,26 @@ class TicketService:
             conn: Database connection.
             schema: PostgreSQL schema name.
             type_filter: Filter by ticket type.
-            view: "kanban" (full tickets) or "summary" (counts only).
+            view: "kanban" (full tickets), "summary" (counts only),
+                  or "detail" (like kanban but with truncated descriptions).
+            status_filter: Filter by status (e.g., "triage", "backlog").
 
         Returns:
             Board view with columns.
         """
         cur = conn.cursor()
-        where_sql = ""
+        conditions: List[str] = []
         params: List[Any] = []
 
         if type_filter:
-            where_sql = "WHERE type = %s"
+            conditions.append("type = %s")
             params.append(type_filter)
+
+        if status_filter:
+            conditions.append("status = %s")
+            params.append(status_filter)
+
+        where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
 
         if view == "summary":
             cur.execute(
@@ -710,7 +723,7 @@ class TicketService:
             ]
             total = sum(r["count"] for r in rows)
         else:
-            # Full kanban - get all tickets grouped by status
+            # Kanban / detail - get tickets grouped by status
             cur.execute(
                 f"""
                 SELECT * FROM {schema}.tickets {where_sql}
@@ -728,13 +741,16 @@ class TicketService:
             )
             rows = cur.fetchall()
 
-            # Group by status
+            # Group by status, truncating descriptions to keep response lean
             status_groups: Dict[str, List] = {}
             for r in rows:
                 status = r["status"]
                 if status not in status_groups:
                     status_groups[status] = []
-                status_groups[status].append(self._row_to_response(r))
+                ticket = self._row_to_response(r)
+                if ticket.description and len(ticket.description) > self.BOARD_DESC_MAX_LENGTH:
+                    ticket.description = ticket.description[: self.BOARD_DESC_MAX_LENGTH] + "..."
+                status_groups[status].append(ticket)
 
             # Build ordered columns based on type's state machine
             if type_filter and type_filter in STATE_MACHINES:

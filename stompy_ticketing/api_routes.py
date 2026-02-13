@@ -116,12 +116,15 @@ async def board_view(
     name: str,
     view: str = Query("kanban"),
     type: Optional[str] = Query(None),
+    ticket_status: Optional[str] = Query(None, alias="status"),
 ):
     """Get a kanban or summary board view."""
     _require_db()
     schema = _get_schema(name)
     with _get_db_for_project(name) as conn:
-        return _service.board_view(conn, schema, type_filter=type, view=view)
+        return _service.board_view(
+            conn, schema, type_filter=type, view=view, status_filter=ticket_status
+        )
 
 
 @router.get("/search", response_model=SearchResult)

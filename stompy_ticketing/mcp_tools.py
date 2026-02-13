@@ -276,21 +276,28 @@ def register_ticketing_tools(
     async def ticket_board(
         view: str = "kanban",
         type: Optional[str] = None,
+        status: Optional[str] = None,
         project: Optional[str] = None,
     ) -> str:
         """Get a dashboard view of tickets grouped by status.
 
         **REQUIRES ACTIVE PROJECT** - Use project_switch() first or pass project param.
 
+        Descriptions are truncated to 200 chars in board views. Use
+        ticket(action="get", id=N) to read full descriptions.
+
         Args:
-            view: kanban (full tickets per column) or summary (counts only)
+            view: "summary" (counts only), "kanban" (tickets with truncated descriptions),
+                  or "detail" (alias for kanban — same truncated output)
             type: Filter by ticket type (task|bug|feature|decision)
+            status: Filter by status (e.g., "triage", "backlog", "in_progress")
             project: Project name (default: active project)
 
         Returns: JSON board view with columns grouped by status
 
         Examples:
-            ticket_board()
+            ticket_board(view="summary")
+            ticket_board(status="triage")
             ticket_board(view="summary", type="task")
         """
         project_check = check_project_func(project)
@@ -301,7 +308,9 @@ def register_ticketing_tools(
             project_name = get_project_func(project)
             with get_db_func(project) as conn:
                 schema = project_name
-                result = service.board_view(conn, schema, type_filter=type, view=view)
+                result = service.board_view(
+                    conn, schema, type_filter=type, view=view, status_filter=status
+                )
                 return _safe_json(result)
 
         except Exception as e:

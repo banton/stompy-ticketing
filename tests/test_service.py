@@ -526,6 +526,78 @@ class TestBoardView:
         assert "backlog" in status_names
         assert "in_progress" in status_names
 
+    def test_kanban_view_truncates_long_descriptions(self):
+        long_desc = "A" * 500
+        rows = [
+            _make_ticket_row(id=1, status="backlog", description=long_desc),
+        ]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        result = self.service.board_view(conn, SCHEMA, view="kanban")
+
+        ticket = result.columns[0].tickets[0]
+        assert len(ticket.description) == 203  # 200 chars + "..."
+        assert ticket.description.endswith("...")
+
+    def test_kanban_view_preserves_short_descriptions(self):
+        short_desc = "Fix the login bug"
+        rows = [
+            _make_ticket_row(id=1, status="backlog", description=short_desc),
+        ]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        result = self.service.board_view(conn, SCHEMA, view="kanban")
+
+        ticket = result.columns[0].tickets[0]
+        assert ticket.description == short_desc
+
+    def test_status_filter(self):
+        rows = [
+            _make_ticket_row(id=1, status="triage"),
+            _make_ticket_row(id=2, status="triage"),
+        ]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        result = self.service.board_view(conn, SCHEMA, status_filter="triage")
+
+        assert result.total == 2
+        # Verify the SQL included the status filter
+        executed_sql = cur.execute.call_args[0][0]
+        assert "status = %s" in executed_sql
+
+    def test_combined_type_and_status_filter(self):
+        rows = [
+            _make_ticket_row(id=1, status="triage", type="bug"),
+        ]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        result = self.service.board_view(
+            conn, SCHEMA, type_filter="bug", status_filter="triage"
+        )
+
+        assert result.total == 1
+        executed_sql = cur.execute.call_args[0][0]
+        assert "type = %s" in executed_sql
+        assert "status = %s" in executed_sql
+
+    def test_detail_view_aliases_to_kanban(self):
+        rows = [
+            _make_ticket_row(id=1, status="backlog", description="A" * 500),
+        ]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        result = self.service.board_view(conn, SCHEMA, view="detail")
+
+        # detail is not "summary", so it uses kanban path with truncation
+        assert result.total == 1
+        ticket = result.columns[0].tickets[0]
+        assert len(ticket.description) == 203
+
 
 # --------------------------------------------------------------------------- #
 # Row conversion tests                                                        #
