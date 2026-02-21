@@ -211,7 +211,7 @@ class TestTransitionTicketAPI:
         ) as client:
             response = await client.post(
                 "/projects/test_project/tickets/1/move",
-                json={"status": "done"},
+                json={"status": "resolved"},
             )
 
         assert response.status_code == 422

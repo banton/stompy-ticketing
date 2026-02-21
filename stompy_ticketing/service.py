@@ -47,7 +47,7 @@ STATE_MACHINES: Dict[str, Dict[str, Any]] = {
         "initial": "backlog",
         "terminal": ["done", "cancelled"],
         "transitions": {
-            "backlog": ["in_progress", "cancelled"],
+            "backlog": ["in_progress", "done", "cancelled"],
             "in_progress": ["done", "cancelled"],
             "done": [],
             "cancelled": [],

@@ -353,7 +353,7 @@ class TestTransitionTicket:
         conn, cur = _mock_conn_and_cursor(fetchone_value=current)
 
         with pytest.raises(InvalidTransitionError, match="Cannot transition"):
-            self.service.transition_ticket(conn, SCHEMA, 1, "done")
+            self.service.transition_ticket(conn, SCHEMA, 1, "resolved")
 
     def test_transition_nonexistent_returns_none(self):
         conn, cur = _mock_conn_and_cursor(fetchone_value=None)
@@ -405,6 +405,20 @@ class TestCloseTicket:
         result = self.service.close_ticket(conn, SCHEMA, 1)
 
         assert result.status == "done"
+
+    @patch("stompy_ticketing.service.time")
+    def test_close_backlog_task_transitions_to_done_not_cancelled(self, mock_time):
+        mock_time.time.return_value = FIXED_TIME
+        type_row = {"type": "task", "status": "backlog"}
+        full_row = _make_ticket_row(status="backlog", type="task")
+        updated_row = _make_ticket_row(status="done", type="task", closed_at=FIXED_TIME)
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchone.side_effect = [type_row, full_row, updated_row]
+
+        result = self.service.close_ticket(conn, SCHEMA, 1)
+
+        assert result.status == "done"
+        assert result.status != "cancelled"
 
 
 # --------------------------------------------------------------------------- #
