@@ -43,6 +43,7 @@ def register_ticketing_tools(
     get_db_func: Callable,
     check_project_func: Callable,
     get_project_func: Callable,
+    notify_resolution_func: Optional[Callable] = None,
 ) -> None:
     """Register ticketing MCP tools on the given FastMCP instance.
 
@@ -51,6 +52,8 @@ def register_ticketing_tools(
         get_db_func: Function(project=None) -> context-manager DB connection.
         check_project_func: Function(project=None) -> error string or None.
         get_project_func: Function(project=None) -> project name string.
+        notify_resolution_func: Optional callback(report, new_status) for bug
+            resolution emails on mcp_global tickets.
     """
     service = TicketService()
 
@@ -155,6 +158,29 @@ def register_ticketing_tools(
                     result = service.transition_ticket(conn, schema, ticket_id, status)
                     if not result:
                         return json.dumps({"error": f"Ticket {ticket_id} not found"})
+
+                    # Email notification for bug ticket resolutions in mcp_global
+                    if (
+                        notify_resolution_func
+                        and schema == "mcp_global"
+                        and result.type == "bug"
+                        and status in ("resolved", "wont_fix", "closed")
+                    ):
+                        try:
+                            meta = result.metadata or {}
+                            reporter_email = meta.get("reporter_email")
+                            if reporter_email:
+                                notify_resolution_func(
+                                    report={
+                                        "id": result.id,
+                                        "title": result.title,
+                                        "user_email": reporter_email,
+                                    },
+                                    new_status=status,
+                                )
+                        except Exception:
+                            pass  # Email failure should not break the transition
+
                     return _safe_json(
                         {"status": "transitioned", "ticket": result.model_dump()}
                     )
