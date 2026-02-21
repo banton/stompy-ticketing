@@ -11,6 +11,8 @@ import json
 import time
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 
+from psycopg2 import sql
+
 from stompy_ticketing.models import (
     BoardColumn,
     BoardView,
@@ -214,13 +216,13 @@ class TicketService:
         cur = conn.cursor()
         try:
             cur.execute(
-                f"""
-                INSERT INTO {schema}.tickets
+                sql.SQL("""
+                INSERT INTO {}.tickets
                     (title, description, type, status, priority, assignee,
                      tags, metadata, session_id, content_hash, created_at, updated_at)
                 VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
                 RETURNING *
-                """,
+                """).format(sql.Identifier(schema)),
                 (
                     data.title,
                     data.description,
@@ -265,7 +267,9 @@ class TicketService:
         """
         cur = conn.cursor()
         cur.execute(
-            f"SELECT * FROM {schema}.tickets WHERE id = %s",
+            sql.SQL("SELECT * FROM {}.tickets WHERE id = %s").format(
+                sql.Identifier(schema)
+            ),
             (ticket_id,),
         )
         row = cur.fetchone()
@@ -276,10 +280,10 @@ class TicketService:
 
         if include_history:
             cur.execute(
-                f"""
-                SELECT * FROM {schema}.ticket_history
+                sql.SQL("""
+                SELECT * FROM {}.ticket_history
                 WHERE ticket_id = %s ORDER BY changed_at DESC
-                """,
+                """).format(sql.Identifier(schema)),
                 (ticket_id,),
             )
             response.history = [
@@ -323,7 +327,9 @@ class TicketService:
         try:
             # Get current ticket
             cur.execute(
-                f"SELECT * FROM {schema}.tickets WHERE id = %s",
+                sql.SQL("SELECT * FROM {}.tickets WHERE id = %s").format(
+                    sql.Identifier(schema)
+                ),
                 (ticket_id,),
             )
             current = cur.fetchone()
@@ -372,12 +378,15 @@ class TicketService:
             values = list(updates.values()) + [now, ticket_id]
 
             cur.execute(
-                f"""
-                UPDATE {schema}.tickets
-                SET {', '.join(set_clauses)}
+                sql.SQL("""
+                UPDATE {}.tickets
+                SET {}
                 WHERE id = %s
                 RETURNING *
-                """,
+                """).format(
+                    sql.Identifier(schema),
+                    sql.SQL(', ').join(sql.SQL(c) for c in set_clauses),
+                ),
                 values,
             )
             updated_row = cur.fetchone()
@@ -385,11 +394,11 @@ class TicketService:
             # Record history
             for field_name, old_val, new_val in history_entries:
                 cur.execute(
-                    f"""
-                    INSERT INTO {schema}.ticket_history
+                    sql.SQL("""
+                    INSERT INTO {}.ticket_history
                         (ticket_id, field_name, old_value, new_value, changed_by, changed_at)
                     VALUES (%s, %s, %s, %s, %s, %s)
-                    """,
+                    """).format(sql.Identifier(schema)),
                     (ticket_id, field_name, old_val, new_val, changed_by, now),
                 )
 
@@ -425,7 +434,9 @@ class TicketService:
         cur = conn.cursor()
         try:
             cur.execute(
-                f"SELECT * FROM {schema}.tickets WHERE id = %s",
+                sql.SQL("SELECT * FROM {}.tickets WHERE id = %s").format(
+                    sql.Identifier(schema)
+                ),
                 (ticket_id,),
             )
             current = cur.fetchone()
@@ -442,23 +453,23 @@ class TicketService:
             closed_at = now if target_status in get_terminal_statuses(ticket_type) else None
 
             cur.execute(
-                f"""
-                UPDATE {schema}.tickets
+                sql.SQL("""
+                UPDATE {}.tickets
                 SET status = %s, updated_at = %s, closed_at = %s
                 WHERE id = %s
                 RETURNING *
-                """,
+                """).format(sql.Identifier(schema)),
                 (target_status, now, closed_at, ticket_id),
             )
             updated_row = cur.fetchone()
 
             # Record history
             cur.execute(
-                f"""
-                INSERT INTO {schema}.ticket_history
+                sql.SQL("""
+                INSERT INTO {}.ticket_history
                     (ticket_id, field_name, old_value, new_value, changed_by, changed_at)
                 VALUES (%s, %s, %s, %s, %s, %s)
-                """,
+                """).format(sql.Identifier(schema)),
                 (ticket_id, "status", current_status, target_status, changed_by, now),
             )
 
@@ -488,7 +499,9 @@ class TicketService:
         """
         cur = conn.cursor()
         cur.execute(
-            f"SELECT type, status FROM {schema}.tickets WHERE id = %s",
+            sql.SQL("SELECT type, status FROM {}.tickets WHERE id = %s").format(
+                sql.Identifier(schema)
+            ),
             (ticket_id,),
         )
         current = cur.fetchone()
@@ -569,9 +582,9 @@ class TicketService:
 
         # Get filtered tickets
         cur.execute(
-            f"""
-            SELECT * FROM {schema}.tickets
-            {where_sql}
+            sql.SQL("""
+            SELECT * FROM {}.tickets
+            {}
             ORDER BY
                 CASE priority
                     WHEN 'urgent' THEN 0
@@ -582,28 +595,34 @@ class TicketService:
                 END,
                 updated_at DESC
             LIMIT %s OFFSET %s
-            """,
+            """).format(sql.Identifier(schema), sql.SQL(where_sql)),
             params + [filters.limit, filters.offset],
         )
         rows = cur.fetchall()
 
         # Get total count
         cur.execute(
-            f"SELECT COUNT(*) as count FROM {schema}.tickets {where_sql}",
+            sql.SQL("SELECT COUNT(*) as count FROM {}.tickets {}").format(
+                sql.Identifier(schema), sql.SQL(where_sql)
+            ),
             params,
         )
         total = cur.fetchone()["count"]
 
         # Get counts by status
         cur.execute(
-            f"SELECT status, COUNT(*) as count FROM {schema}.tickets {where_sql} GROUP BY status",
+            sql.SQL(
+                "SELECT status, COUNT(*) as count FROM {}.tickets {} GROUP BY status"
+            ).format(sql.Identifier(schema), sql.SQL(where_sql)),
             params,
         )
         by_status = {r["status"]: r["count"] for r in cur.fetchall()}
 
         # Get counts by type
         cur.execute(
-            f"SELECT type, COUNT(*) as count FROM {schema}.tickets {where_sql} GROUP BY type",
+            sql.SQL(
+                "SELECT type, COUNT(*) as count FROM {}.tickets {} GROUP BY type"
+            ).format(sql.Identifier(schema), sql.SQL(where_sql)),
             params,
         )
         by_type = {r["type"]: r["count"] for r in cur.fetchall()}
@@ -687,13 +706,13 @@ class TicketService:
         where_sql = "WHERE " + " AND ".join(where_clauses)
 
         cur.execute(
-            f"""
+            sql.SQL("""
             SELECT *, ts_rank(content_tsvector, to_tsquery('english', %s)) as rank
-            FROM {schema}.tickets
-            {where_sql}
+            FROM {}.tickets
+            {}
             ORDER BY rank DESC
             LIMIT %s
-            """,
+            """).format(sql.Identifier(schema), sql.SQL(where_sql)),
             [tsquery_param] + params + [limit],
         )
         rows = cur.fetchall()
@@ -745,11 +764,11 @@ class TicketService:
 
         if view == "summary":
             cur.execute(
-                f"""
+                sql.SQL("""
                 SELECT status, COUNT(*) as count
-                FROM {schema}.tickets {where_sql}
+                FROM {}.tickets {}
                 GROUP BY status ORDER BY status
-                """,
+                """).format(sql.Identifier(schema), sql.SQL(where_sql)),
                 params,
             )
             rows = cur.fetchall()
@@ -761,8 +780,8 @@ class TicketService:
         else:
             # Kanban / detail - get tickets grouped by status
             cur.execute(
-                f"""
-                SELECT * FROM {schema}.tickets {where_sql}
+                sql.SQL("""
+                SELECT * FROM {}.tickets {}
                 ORDER BY
                     CASE priority
                         WHEN 'urgent' THEN 0
@@ -772,7 +791,7 @@ class TicketService:
                         ELSE 4
                     END,
                     updated_at DESC
-                """,
+                """).format(sql.Identifier(schema), sql.SQL(where_sql)),
                 params,
             )
             rows = cur.fetchall()
@@ -840,12 +859,12 @@ class TicketService:
         try:
             now = time.time()
             cur.execute(
-                f"""
-                INSERT INTO {schema}.ticket_links
+                sql.SQL("""
+                INSERT INTO {}.ticket_links
                     (source_id, target_id, link_type, created_at)
                 VALUES (%s, %s, %s, %s)
                 RETURNING *
-                """,
+                """).format(sql.Identifier(schema)),
                 (source_id, data.target_id, data.link_type.value, now),
             )
             row = cur.fetchone()
@@ -853,7 +872,9 @@ class TicketService:
             # Enrich with target ticket title/status so the response
             # matches the format returned by list_links / _get_links_for_ticket
             cur.execute(
-                f"SELECT title, status FROM {schema}.tickets WHERE id = %s",
+                sql.SQL("SELECT title, status FROM {}.tickets WHERE id = %s").format(
+                    sql.Identifier(schema)
+                ),
                 (data.target_id,),
             )
             target = cur.fetchone()
@@ -886,7 +907,9 @@ class TicketService:
         cur = conn.cursor()
         try:
             cur.execute(
-                f"DELETE FROM {schema}.ticket_links WHERE id = %s RETURNING id",
+                sql.SQL("DELETE FROM {}.ticket_links WHERE id = %s RETURNING id").format(
+                    sql.Identifier(schema)
+                ),
                 (link_id,),
             )
             result = cur.fetchone()
@@ -921,18 +944,19 @@ class TicketService:
         self, cur: Any, schema: str, ticket_id: int
     ) -> List[TicketLinkResponse]:
         """Get all links for a ticket (both as source and target)."""
+        sch = sql.Identifier(schema)
         cur.execute(
-            f"""
+            sql.SQL("""
             SELECT tl.*, t.title as target_title, t.status as target_status
-            FROM {schema}.ticket_links tl
-            JOIN {schema}.tickets t ON t.id = tl.target_id
+            FROM {}.ticket_links tl
+            JOIN {}.tickets t ON t.id = tl.target_id
             WHERE tl.source_id = %s
             UNION ALL
             SELECT tl.*, t.title as target_title, t.status as target_status
-            FROM {schema}.ticket_links tl
-            JOIN {schema}.tickets t ON t.id = tl.source_id
+            FROM {}.ticket_links tl
+            JOIN {}.tickets t ON t.id = tl.source_id
             WHERE tl.target_id = %s
-            """,
+            """).format(sch, sch, sch, sch),
             (ticket_id, ticket_id),
         )
         return [self._link_row_to_response(r) for r in cur.fetchall()]
