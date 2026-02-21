@@ -9,6 +9,7 @@ import time
 from unittest.mock import MagicMock, patch
 
 import pytest
+from psycopg2 import sql as psql
 
 from stompy_ticketing.models import (
     Priority,
@@ -132,6 +133,24 @@ def _mock_conn_and_cursor(rows=None, fetchone_value=None):
         cur.fetchone.return_value = None
 
     return conn, cur
+
+
+def _sql_to_str(query) -> str:
+    """Convert a psycopg2 sql.Composed/SQL object to a plain string for assertions.
+
+    Uses recursive extraction since as_string() requires a real psycopg2 connection.
+    Falls back to str() for plain strings.
+    """
+    if isinstance(query, psql.Composed):
+        parts = []
+        for part in query._wrapped:
+            parts.append(_sql_to_str(part))
+        return "".join(parts)
+    if isinstance(query, psql.SQL):
+        return query._wrapped
+    if isinstance(query, psql.Identifier):
+        return ".".join(query._wrapped)
+    return str(query)
 
 
 # --------------------------------------------------------------------------- #
@@ -334,7 +353,7 @@ class TestTransitionTicket:
         conn, cur = _mock_conn_and_cursor(fetchone_value=current)
 
         with pytest.raises(InvalidTransitionError, match="Cannot transition"):
-            self.service.transition_ticket(conn, SCHEMA, 1, "done")
+            self.service.transition_ticket(conn, SCHEMA, 1, "resolved")
 
     def test_transition_nonexistent_returns_none(self):
         conn, cur = _mock_conn_and_cursor(fetchone_value=None)
@@ -386,6 +405,20 @@ class TestCloseTicket:
         result = self.service.close_ticket(conn, SCHEMA, 1)
 
         assert result.status == "done"
+
+    @patch("stompy_ticketing.service.time")
+    def test_close_backlog_task_transitions_to_done_not_cancelled(self, mock_time):
+        mock_time.time.return_value = FIXED_TIME
+        type_row = {"type": "task", "status": "backlog"}
+        full_row = _make_ticket_row(status="backlog", type="task")
+        updated_row = _make_ticket_row(status="done", type="task", closed_at=FIXED_TIME)
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchone.side_effect = [type_row, full_row, updated_row]
+
+        result = self.service.close_ticket(conn, SCHEMA, 1)
+
+        assert result.status == "done"
+        assert result.status != "cancelled"
 
 
 # --------------------------------------------------------------------------- #
@@ -699,7 +732,7 @@ class TestBoardView:
 
         assert result.total == 2
         # Verify the SQL included the status filter
-        executed_sql = cur.execute.call_args[0][0]
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
         assert "status = %s" in executed_sql
 
     def test_combined_type_and_status_filter(self):
@@ -714,7 +747,7 @@ class TestBoardView:
         )
 
         assert result.total == 1
-        executed_sql = cur.execute.call_args[0][0]
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
         assert "type = %s" in executed_sql
         assert "status = %s" in executed_sql
 
@@ -800,7 +833,7 @@ class TestSearchTickets:
         assert len(result.tickets) == 2
 
         # Verify the SQL uses OR-based tsquery, not plainto_tsquery (which uses AND)
-        executed_sql = cur.execute.call_args[0][0]
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
         assert "plainto_tsquery" not in executed_sql, (
             "plainto_tsquery uses AND logic; should use OR-based tsquery"
         )
@@ -819,7 +852,7 @@ class TestSearchTickets:
         result = self.service.search_tickets(conn, SCHEMA, "verification")
 
         # Verify 'english' config is used in the tsquery
-        executed_sql = cur.execute.call_args[0][0]
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
         assert "'english'" in executed_sql
 
     def test_should_rank_results_by_relevance(self):
@@ -835,7 +868,7 @@ class TestSearchTickets:
 
         assert result.total == 2
         # Verify ORDER BY rank DESC is in the SQL
-        executed_sql = cur.execute.call_args[0][0]
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
         assert "rank DESC" in executed_sql
 
     def test_should_apply_type_filter_with_search(self):
@@ -851,7 +884,7 @@ class TestSearchTickets:
         )
 
         assert result.total == 1
-        executed_sql = cur.execute.call_args[0][0]
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
         assert "type = %s" in executed_sql
 
     def test_should_apply_status_filter_with_search(self):
@@ -867,7 +900,7 @@ class TestSearchTickets:
         )
 
         assert result.total == 1
-        executed_sql = cur.execute.call_args[0][0]
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
         assert "status = %s" in executed_sql
 
     def test_should_respect_limit_parameter(self):
@@ -968,7 +1001,7 @@ class TestListTicketsSearchFilter:
         result = self.service.list_tickets(conn, SCHEMA, filters)
 
         # Verify the search clause uses OR-based tsquery, not plainto_tsquery
-        first_execute_sql = cur.execute.call_args_list[0][0][0]
+        first_execute_sql = _sql_to_str(cur.execute.call_args_list[0][0][0])
         assert "plainto_tsquery" not in first_execute_sql, (
             "list_tickets search should also use OR-based tsquery"
         )

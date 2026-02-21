@@ -138,9 +138,10 @@ class TestInvalidTransitions:
         with pytest.raises(InvalidTransitionError, match="Cannot transition"):
             validate_transition("task", "done", "in_progress", raise_on_invalid=True)
 
-    def test_task_backlog_to_done_skipping(self):
-        with pytest.raises(InvalidTransitionError):
-            validate_transition("task", "backlog", "done", raise_on_invalid=True)
+    def test_task_backlog_to_done_is_valid(self):
+        # backlog -> done is allowed (direct close without going through in_progress)
+        result = validate_transition("task", "backlog", "done", raise_on_invalid=True)
+        assert result is True
 
     def test_bug_resolved_to_triage(self):
         with pytest.raises(InvalidTransitionError):
