@@ -22,6 +22,7 @@ def register_plugin(
     check_project_func: Callable,
     get_project_func: Callable,
     resolve_schema_func: Optional[Callable] = None,
+    notify_resolution_func: Optional[Callable] = None,
 ) -> Dict[str, Any]:
     """One-call plugin registration.
 
@@ -37,6 +38,8 @@ def register_plugin(
         check_project_func: Function(project=None) -> error string or None.
         get_project_func: Function(project=None) -> project name string.
         resolve_schema_func: Optional function to resolve project name to schema.
+        notify_resolution_func: Optional callback(report, new_status) for bug
+            resolution emails on mcp_global tickets.
 
     Returns:
         Dict with:
@@ -49,6 +52,7 @@ def register_plugin(
         get_db_func=get_db_func,
         check_project_func=check_project_func,
         get_project_func=get_project_func,
+        notify_resolution_func=notify_resolution_func,
     )
     logger.info("stompy_ticketing: MCP tools registered (4 tools)")
 
