@@ -327,3 +327,115 @@ class TestSchemaResolution:
             mock_svc.list_links.assert_called_once()
             call_args = mock_svc.list_links.call_args
             assert call_args[0][1] == "resolved_schema"
+
+
+class TestTicketListPagination:
+    """Tests for limit/offset pagination in the ticket tool's list action."""
+
+    def _register_tools_with_mock_service(self, mock_svc):
+        """Register tools with a pre-configured mock TicketService."""
+        mcp = _make_mock_mcp()
+        check_project = MagicMock(return_value=None)
+        get_project = MagicMock(return_value="test-project")
+
+        @contextmanager
+        def db_ctx(project=None):
+            yield MagicMock()
+
+        with patch("stompy_ticketing.mcp_tools.TicketService", return_value=mock_svc):
+            register_ticketing_tools(
+                mcp_instance=mcp,
+                get_db_func=db_ctx,
+                check_project_func=check_project,
+                get_project_func=get_project,
+            )
+
+        return mcp._registered_tools
+
+    def test_list_default_limit_is_20(self):
+        """ticket(action='list') without limit should default to 20."""
+        mock_svc = MagicMock()
+        mock_result = MagicMock()
+        mock_result.model_dump.return_value = {
+            "tickets": [], "total": 0, "limit": 20, "offset": 0, "has_more": False,
+        }
+        mock_svc.list_tickets.return_value = mock_result
+
+        tools = self._register_tools_with_mock_service(mock_svc)
+        ticket_fn = tools["ticket"]
+        asyncio.get_event_loop().run_until_complete(
+            ticket_fn(action="list")
+        )
+
+        mock_svc.list_tickets.assert_called_once()
+        filters_arg = mock_svc.list_tickets.call_args[0][2]
+        assert filters_arg.limit == 20
+        assert filters_arg.offset == 0
+
+    def test_list_custom_limit_and_offset(self):
+        """ticket(action='list', limit=10, offset=30) should pass through."""
+        mock_svc = MagicMock()
+        mock_result = MagicMock()
+        mock_result.model_dump.return_value = {
+            "tickets": [], "total": 50, "limit": 10, "offset": 30, "has_more": True,
+        }
+        mock_svc.list_tickets.return_value = mock_result
+
+        tools = self._register_tools_with_mock_service(mock_svc)
+        ticket_fn = tools["ticket"]
+        asyncio.get_event_loop().run_until_complete(
+            ticket_fn(action="list", limit=10, offset=30)
+        )
+
+        mock_svc.list_tickets.assert_called_once()
+        filters_arg = mock_svc.list_tickets.call_args[0][2]
+        assert filters_arg.limit == 10
+        assert filters_arg.offset == 30
+
+    def test_list_response_includes_pagination_metadata(self):
+        """Response JSON should include limit, offset, has_more."""
+        mock_svc = MagicMock()
+        mock_result = MagicMock()
+        mock_result.model_dump.return_value = {
+            "tickets": [{"id": 1, "title": "Test"}],
+            "total": 54,
+            "limit": 20,
+            "offset": 0,
+            "has_more": True,
+            "by_status": {"backlog": 54},
+            "by_type": {"task": 54},
+        }
+        mock_svc.list_tickets.return_value = mock_result
+
+        tools = self._register_tools_with_mock_service(mock_svc)
+        ticket_fn = tools["ticket"]
+        raw = asyncio.get_event_loop().run_until_complete(
+            ticket_fn(action="list")
+        )
+        data = json.loads(raw)
+
+        assert data["total"] == 54
+        assert data["limit"] == 20
+        assert data["offset"] == 0
+        assert data["has_more"] is True
+
+    def test_list_limit_capped_at_200(self):
+        """Limit should not exceed 200 (TicketListFilters max)."""
+        mock_svc = MagicMock()
+        mock_result = MagicMock()
+        mock_result.model_dump.return_value = {
+            "tickets": [], "total": 0, "limit": 200, "offset": 0, "has_more": False,
+        }
+        mock_svc.list_tickets.return_value = mock_result
+
+        tools = self._register_tools_with_mock_service(mock_svc)
+        ticket_fn = tools["ticket"]
+        raw = asyncio.get_event_loop().run_until_complete(
+            ticket_fn(action="list", limit=500)
+        )
+        data = json.loads(raw)
+
+        # Should be capped to 200 by min() in the tool
+        mock_svc.list_tickets.assert_called_once()
+        filters_arg = mock_svc.list_tickets.call_args[0][2]
+        assert filters_arg.limit <= 200

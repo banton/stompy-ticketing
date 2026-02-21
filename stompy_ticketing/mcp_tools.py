@@ -75,6 +75,8 @@ def register_ticketing_tools(
         assignee: Optional[str] = None,
         tags: Optional[str] = None,
         ticket_id: Optional[int] = None,
+        limit: Optional[int] = None,
+        offset: Optional[int] = None,
         project: Optional[str] = None,
     ) -> str:
         """Create, read, update, move, list, or close tickets.
@@ -86,7 +88,7 @@ def register_ticketing_tools(
           get     - Get ticket by ID (ticket_id required)
           update  - Update ticket fields (ticket_id required)
           move    - Transition status (ticket_id + status required)
-          list    - List tickets (optional type/status/priority/assignee filters)
+          list    - List tickets (optional type/status/priority/assignee/limit/offset filters)
           close   - Close ticket (ticket_id required)
 
         Args:
@@ -99,13 +101,16 @@ def register_ticketing_tools(
             assignee: Assignee name (create/update/filter)
             tags: Comma-separated tags (create/update)
             ticket_id: Ticket ID (get/update/move/close)
+            limit: Max tickets to return for list (default: 20, max: 200)
+            offset: Number of tickets to skip for list (default: 0)
             project: Project name (default: active project)
 
-        Returns: JSON with ticket data or list results
+        Returns: JSON with ticket data or list results (includes pagination: total, limit, offset, has_more)
 
         Examples:
             ticket(action="create", title="Fix login bug", type="bug", priority="high")
             ticket(action="list", type="task", status="in_progress")
+            ticket(action="list", limit=10, offset=20)
             ticket(action="move", ticket_id=1, status="in_progress")
             ticket(action="close", ticket_id=1)
         """
@@ -193,11 +198,15 @@ def register_ticketing_tools(
                     )
 
                 elif action == "list":
+                    effective_limit = min(limit, 200) if limit is not None else 20
+                    effective_offset = offset if offset is not None else 0
                     filters = TicketListFilters(
                         type=TicketType(type) if type else None,
                         status=status,
                         priority=Priority(priority) if priority else None,
                         assignee=assignee,
+                        limit=effective_limit,
+                        offset=effective_offset,
                     )
                     result = service.list_tickets(conn, schema, filters)
                     return _safe_json(result)

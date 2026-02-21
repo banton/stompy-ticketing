@@ -557,10 +557,11 @@ class TicketService:
             params.append(filters.assignee)
 
         if filters.search:
+            tsquery_param = self._build_or_tsquery_param(filters.search)
             where_clauses.append(
-                "content_tsvector @@ plainto_tsquery('english', %s)"
+                "content_tsvector @@ to_tsquery('english', %s)"
             )
-            params.append(filters.search)
+            params.append(tsquery_param)
 
         where_sql = ""
         if where_clauses:
@@ -610,9 +611,38 @@ class TicketService:
         return TicketListResponse(
             tickets=[self._row_to_response(r) for r in rows],
             total=total,
+            limit=filters.limit,
+            offset=filters.offset,
+            has_more=(filters.offset + filters.limit) < total,
             by_status=by_status,
             by_type=by_type,
         )
+
+    @staticmethod
+    def _build_or_tsquery_param(query: str) -> str:
+        """Build an OR-joined tsquery parameter string from a free-text query.
+
+        Splits the query into words, strips whitespace, removes empty tokens,
+        and joins with ' | ' for OR semantics in to_tsquery('english', ...).
+
+        This enables partial matching: "dogfood test verification" becomes
+        "dogfood | test | verification", so documents matching ANY term are
+        returned (ranked by how many terms match via ts_rank).
+
+        Stemming is handled by to_tsquery('english', ...) at query time,
+        e.g. "verification" -> stem "verifi" matches stored "verify" -> "verifi".
+
+        Args:
+            query: Raw search query string.
+
+        Returns:
+            OR-joined term string suitable for to_tsquery('english', ...).
+        """
+        # Split on whitespace, filter empty tokens
+        terms = [t.strip() for t in query.split() if t.strip()]
+        if not terms:
+            return ""
+        return " | ".join(terms)
 
     def search_tickets(
         self,
@@ -623,7 +653,11 @@ class TicketService:
         status_filter: Optional[str] = None,
         limit: int = 20,
     ) -> SearchResult:
-        """Full-text search tickets using tsvector (BM25).
+        """Full-text search tickets using tsvector with OR-based ranking.
+
+        Uses OR logic between query terms so that partial matches are returned,
+        ranked by ts_rank (documents matching more terms rank higher).
+        Stemming is applied via the 'english' text search configuration.
 
         Args:
             conn: Database connection.
@@ -634,11 +668,13 @@ class TicketService:
             limit: Max results.
 
         Returns:
-            Search results.
+            Search results ranked by relevance.
         """
         cur = conn.cursor()
-        where_clauses = ["content_tsvector @@ plainto_tsquery('english', %s)"]
-        params: List[Any] = [query]
+        tsquery_param = self._build_or_tsquery_param(query)
+
+        where_clauses = ["content_tsvector @@ to_tsquery('english', %s)"]
+        params: List[Any] = [tsquery_param]
 
         if type_filter:
             where_clauses.append("type = %s")
@@ -652,13 +688,13 @@ class TicketService:
 
         cur.execute(
             f"""
-            SELECT *, ts_rank(content_tsvector, plainto_tsquery('english', %s)) as rank
+            SELECT *, ts_rank(content_tsvector, to_tsquery('english', %s)) as rank
             FROM {schema}.tickets
             {where_sql}
             ORDER BY rank DESC
             LIMIT %s
             """,
-            [query] + params + [limit],
+            [tsquery_param] + params + [limit],
         )
         rows = cur.fetchall()
 
@@ -813,6 +849,18 @@ class TicketService:
                 (source_id, data.target_id, data.link_type.value, now),
             )
             row = cur.fetchone()
+
+            # Enrich with target ticket title/status so the response
+            # matches the format returned by list_links / _get_links_for_ticket
+            cur.execute(
+                f"SELECT title, status FROM {schema}.tickets WHERE id = %s",
+                (data.target_id,),
+            )
+            target = cur.fetchone()
+            if target:
+                row["target_title"] = target["title"]
+                row["target_status"] = target["status"]
+
             conn.commit()
             return self._link_row_to_response(row)
         except Exception:

@@ -439,6 +439,79 @@ class TestListTickets:
         assert result.total == 0
         assert result.tickets == []
 
+    def test_list_default_limit_is_20(self):
+        """Default limit should be 20 when no filters provided."""
+        rows = [_make_ticket_row(id=i) for i in range(1, 21)]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchone.side_effect = [{"count": 54}]
+        cur.fetchall.side_effect = [
+            rows,
+            [{"status": "backlog", "count": 54}],
+            [{"type": "task", "count": 54}],
+        ]
+
+        result = self.service.list_tickets(conn, SCHEMA)
+
+        assert result.limit == 20
+        assert result.offset == 0
+        assert result.has_more is True
+        assert result.total == 54
+        assert len(result.tickets) == 20
+
+    def test_list_pagination_metadata_with_custom_limit_offset(self):
+        """Pagination metadata should reflect custom limit and offset."""
+        rows = [_make_ticket_row(id=i) for i in range(21, 41)]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchone.side_effect = [{"count": 54}]
+        cur.fetchall.side_effect = [
+            rows,
+            [{"status": "backlog", "count": 54}],
+            [{"type": "task", "count": 54}],
+        ]
+
+        filters = TicketListFilters(limit=20, offset=20)
+        result = self.service.list_tickets(conn, SCHEMA, filters)
+
+        assert result.limit == 20
+        assert result.offset == 20
+        assert result.has_more is True
+        assert result.total == 54
+
+    def test_list_has_more_false_when_no_more_results(self):
+        """has_more should be False when offset + limit >= total."""
+        rows = [_make_ticket_row(id=i) for i in range(41, 55)]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchone.side_effect = [{"count": 54}]
+        cur.fetchall.side_effect = [
+            rows,
+            [{"status": "backlog", "count": 54}],
+            [{"type": "task", "count": 54}],
+        ]
+
+        filters = TicketListFilters(limit=20, offset=40)
+        result = self.service.list_tickets(conn, SCHEMA, filters)
+
+        assert result.limit == 20
+        assert result.offset == 40
+        assert result.has_more is False
+        assert result.total == 54
+        assert len(result.tickets) == 14
+
+    def test_list_passes_limit_and_offset_to_sql(self):
+        """SQL query should use the limit and offset from filters."""
+        conn, cur = _mock_conn_and_cursor(rows=[])
+        cur.fetchone.side_effect = [{"count": 0}]
+        cur.fetchall.side_effect = [[], [], []]
+
+        filters = TicketListFilters(limit=10, offset=30)
+        self.service.list_tickets(conn, SCHEMA, filters)
+
+        # The first execute call is the main query with LIMIT/OFFSET
+        first_call_params = cur.execute.call_args_list[0][0][1]
+        # limit and offset are the last two params
+        assert first_call_params[-2] == 10  # limit
+        assert first_call_params[-1] == 30  # offset
+
 
 # --------------------------------------------------------------------------- #
 # Link tests                                                                  #
@@ -452,8 +525,18 @@ class TestLinks:
     @patch("stompy_ticketing.service.time")
     def test_add_link(self, mock_time):
         mock_time.time.return_value = FIXED_TIME
-        link_row = _make_link_row()
-        conn, cur = _mock_conn_and_cursor(fetchone_value=link_row)
+        # INSERT RETURNING * only has link columns (no target_title/target_status)
+        raw_insert_row = {
+            "id": 1,
+            "source_id": 1,
+            "target_id": 2,
+            "link_type": "blocks",
+            "created_at": FIXED_TIME,
+        }
+        # The follow-up SELECT fetches target ticket info
+        target_ticket_row = {"title": "Target ticket", "status": "backlog"}
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchone.side_effect = [raw_insert_row, target_ticket_row]
 
         data = TicketLinkCreate(target_id=2, link_type=LinkType.blocks)
         result = self.service.add_link(conn, SCHEMA, 1, data)
@@ -462,6 +545,57 @@ class TestLinks:
         assert result.target_id == 2
         assert result.link_type == "blocks"
         conn.commit.assert_called_once()
+
+    @patch("stompy_ticketing.service.time")
+    def test_add_link_populates_target_title_and_status(self, mock_time):
+        """Bug fix: add_link must return target_title and target_status like list_links does."""
+        mock_time.time.return_value = FIXED_TIME
+        # INSERT RETURNING * only has link columns (no target_title/target_status)
+        raw_insert_row = {
+            "id": 1,
+            "source_id": 1,
+            "target_id": 2,
+            "link_type": "blocks",
+            "created_at": FIXED_TIME,
+        }
+        # The follow-up SELECT fetches target ticket info
+        target_ticket_row = {"title": "Implement auth", "status": "in_progress"}
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchone.side_effect = [raw_insert_row, target_ticket_row]
+
+        data = TicketLinkCreate(target_id=2, link_type=LinkType.blocks)
+        result = self.service.add_link(conn, SCHEMA, 1, data)
+
+        assert result.target_title == "Implement auth"
+        assert result.target_status == "in_progress"
+
+    @patch("stompy_ticketing.service.time")
+    def test_add_link_response_matches_list_link_format(self, mock_time):
+        """The add response should have the same enriched format as list."""
+        mock_time.time.return_value = FIXED_TIME
+        # INSERT returns raw link row
+        raw_insert_row = {
+            "id": 5,
+            "source_id": 10,
+            "target_id": 20,
+            "link_type": "related",
+            "created_at": FIXED_TIME,
+        }
+        target_ticket_row = {"title": "Deploy pipeline", "status": "backlog"}
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchone.side_effect = [raw_insert_row, target_ticket_row]
+
+        data = TicketLinkCreate(target_id=20, link_type=LinkType.related)
+        add_result = self.service.add_link(conn, SCHEMA, 10, data)
+
+        # Verify add response has the same fields list would have
+        assert add_result.id == 5
+        assert add_result.source_id == 10
+        assert add_result.target_id == 20
+        assert add_result.link_type == "related"
+        assert add_result.target_title == "Deploy pipeline"
+        assert add_result.target_status == "backlog"
+        assert add_result.created_at == FIXED_TIME
 
     def test_remove_link_found(self):
         conn, cur = _mock_conn_and_cursor(fetchone_value={"id": 1})
@@ -627,3 +761,343 @@ class TestRowConversion:
         row = _make_ticket_row(metadata=json.dumps({"key": "value"}))
         result = self.service._row_to_response(row)
         assert result.metadata == {"key": "value"}
+
+
+# --------------------------------------------------------------------------- #
+# Search tests                                                                 #
+# --------------------------------------------------------------------------- #
+
+
+class TestSearchTickets:
+    """Tests for search_tickets full-text search behavior.
+
+    These tests verify:
+    - Multi-word queries use OR logic (partial matches returned)
+    - Stemming is applied (e.g. "verification" matches "verify")
+    - Results are ranked by relevance via ts_rank
+    - Type and status filters are applied correctly
+    """
+
+    def setup_method(self):
+        self.service = TicketService()
+
+    def test_should_use_or_logic_for_multi_word_queries(self):
+        """Multi-word queries should use OR (|) between terms, not AND (&).
+
+        With AND logic, "dogfood test verification" requires all 3 terms.
+        With OR logic, documents matching any subset are returned.
+        """
+        rows = [
+            {**_make_ticket_row(id=1, title="Dogfood test results"), "rank": 0.8},
+            {**_make_ticket_row(id=2, title="Test plan for release"), "rank": 0.4},
+        ]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        result = self.service.search_tickets(conn, SCHEMA, "dogfood test verification")
+
+        assert result.total == 2
+        assert len(result.tickets) == 2
+
+        # Verify the SQL uses OR-based tsquery, not plainto_tsquery (which uses AND)
+        executed_sql = cur.execute.call_args[0][0]
+        assert "plainto_tsquery" not in executed_sql, (
+            "plainto_tsquery uses AND logic; should use OR-based tsquery"
+        )
+
+    def test_should_apply_english_stemming_config(self):
+        """Search should use 'english' text search config for stemming.
+
+        This means "verification" -> stem "verifi" matches "verify" -> stem "verifi".
+        """
+        rows = [
+            {**_make_ticket_row(id=1, title="Verify the deployment"), "rank": 0.6},
+        ]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        result = self.service.search_tickets(conn, SCHEMA, "verification")
+
+        # Verify 'english' config is used in the tsquery
+        executed_sql = cur.execute.call_args[0][0]
+        assert "'english'" in executed_sql
+
+    def test_should_rank_results_by_relevance(self):
+        """Results should be ordered by ts_rank descending."""
+        rows = [
+            {**_make_ticket_row(id=1, title="Best match"), "rank": 0.9},
+            {**_make_ticket_row(id=2, title="Partial match"), "rank": 0.3},
+        ]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        result = self.service.search_tickets(conn, SCHEMA, "match test")
+
+        assert result.total == 2
+        # Verify ORDER BY rank DESC is in the SQL
+        executed_sql = cur.execute.call_args[0][0]
+        assert "rank DESC" in executed_sql
+
+    def test_should_apply_type_filter_with_search(self):
+        """Type filter should be combined with search query."""
+        rows = [
+            {**_make_ticket_row(id=1, type="bug", title="Bug match"), "rank": 0.5},
+        ]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        result = self.service.search_tickets(
+            conn, SCHEMA, "match", type_filter="bug"
+        )
+
+        assert result.total == 1
+        executed_sql = cur.execute.call_args[0][0]
+        assert "type = %s" in executed_sql
+
+    def test_should_apply_status_filter_with_search(self):
+        """Status filter should be combined with search query."""
+        rows = [
+            {**_make_ticket_row(id=1, status="backlog", title="Backlog match"), "rank": 0.5},
+        ]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        result = self.service.search_tickets(
+            conn, SCHEMA, "match", status_filter="backlog"
+        )
+
+        assert result.total == 1
+        executed_sql = cur.execute.call_args[0][0]
+        assert "status = %s" in executed_sql
+
+    def test_should_respect_limit_parameter(self):
+        """The limit parameter should be passed to the SQL query."""
+        rows = []
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        self.service.search_tickets(conn, SCHEMA, "anything", limit=5)
+
+        # Verify limit is passed as param (last param in the list)
+        executed_params = cur.execute.call_args[0][1]
+        assert 5 in executed_params
+
+    def test_should_return_empty_results_for_no_matches(self):
+        """When no rows match, return empty SearchResult."""
+        conn, cur = _mock_conn_and_cursor(rows=[])
+        cur.fetchall.return_value = []
+
+        result = self.service.search_tickets(conn, SCHEMA, "nonexistent")
+
+        assert result.total == 0
+        assert result.tickets == []
+        assert result.query == "nonexistent"
+
+    def test_should_build_or_tsquery_from_multi_word_input(self):
+        """Each word in the query should be joined with | (OR) in the tsquery.
+
+        For "dogfood test verification":
+        - Should produce something like: to_tsquery('english', 'dogfood | test | verification')
+        - NOT: plainto_tsquery('english', 'dogfood test verification') which uses AND
+        """
+        rows = []
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        self.service.search_tickets(conn, SCHEMA, "dogfood test verification")
+
+        # Verify the query parameter contains OR-joined terms
+        executed_params = cur.execute.call_args[0][1]
+        # The tsquery string param should contain '|' separators
+        tsquery_param = executed_params[0]  # First param is the tsquery string
+        assert "|" in tsquery_param, (
+            f"Expected OR-joined terms with '|', got: {tsquery_param}"
+        )
+
+    def test_should_handle_single_word_query(self):
+        """Single-word queries should work without any OR joining."""
+        rows = [
+            {**_make_ticket_row(id=1, title="Dogfood session"), "rank": 0.7},
+        ]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        result = self.service.search_tickets(conn, SCHEMA, "dogfood")
+
+        assert result.total == 1
+        assert result.query == "dogfood"
+
+    def test_should_strip_extra_whitespace_from_query_terms(self):
+        """Extra whitespace in query should be handled gracefully."""
+        rows = []
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        self.service.search_tickets(conn, SCHEMA, "  dogfood   test  ")
+
+        executed_params = cur.execute.call_args[0][1]
+        tsquery_param = executed_params[0]
+        # Should not have empty terms or extra spaces in the tsquery
+        assert "  " not in tsquery_param
+        assert "| |" not in tsquery_param
+
+
+# --------------------------------------------------------------------------- #
+# List tickets search filter tests                                             #
+# --------------------------------------------------------------------------- #
+
+
+class TestListTicketsSearchFilter:
+    """Tests for the search filter in list_tickets (uses same OR logic)."""
+
+    def setup_method(self):
+        self.service = TicketService()
+
+    def test_should_use_or_logic_for_list_search_filter(self):
+        """list_tickets with search filter should also use OR logic."""
+        rows = [_make_ticket_row(id=1)]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchone.side_effect = [{"count": 1}]
+        cur.fetchall.side_effect = [
+            rows,
+            [{"status": "backlog", "count": 1}],
+            [{"type": "task", "count": 1}],
+        ]
+
+        filters = TicketListFilters(search="dogfood test verification")
+        result = self.service.list_tickets(conn, SCHEMA, filters)
+
+        # Verify the search clause uses OR-based tsquery, not plainto_tsquery
+        first_execute_sql = cur.execute.call_args_list[0][0][0]
+        assert "plainto_tsquery" not in first_execute_sql, (
+            "list_tickets search should also use OR-based tsquery"
+        )
+
+
+# --------------------------------------------------------------------------- #
+# Consistency: history/links always arrays, never None (#16)                   #
+# --------------------------------------------------------------------------- #
+
+
+class TestHistoryLinksConsistency:
+    """Verify that history and links are always lists, never None.
+
+    Bug #16: create_ticket and transition_ticket returned history=None
+    and links=None, while get_ticket returned history=[] and links=[].
+    All actions must return consistent list types.
+    """
+
+    def setup_method(self):
+        self.service = TicketService()
+
+    @patch("stompy_ticketing.service.time")
+    def test_create_ticket_returns_empty_history_list(self, mock_time):
+        """create_ticket response must have history=[], not None."""
+        mock_time.time.return_value = FIXED_TIME
+        row = _make_ticket_row(title="New task", status="backlog")
+        conn, cur = _mock_conn_and_cursor(fetchone_value=row)
+
+        data = TicketCreate(title="New task", type=TicketType.task)
+        result = self.service.create_ticket(conn, SCHEMA, data)
+
+        assert result.history is not None, "history should not be None"
+        assert result.history == []
+
+    @patch("stompy_ticketing.service.time")
+    def test_create_ticket_returns_empty_links_list(self, mock_time):
+        """create_ticket response must have links=[], not None."""
+        mock_time.time.return_value = FIXED_TIME
+        row = _make_ticket_row(title="New task", status="backlog")
+        conn, cur = _mock_conn_and_cursor(fetchone_value=row)
+
+        data = TicketCreate(title="New task", type=TicketType.task)
+        result = self.service.create_ticket(conn, SCHEMA, data)
+
+        assert result.links is not None, "links should not be None"
+        assert result.links == []
+
+    @patch("stompy_ticketing.service.time")
+    def test_transition_ticket_returns_empty_history_list(self, mock_time):
+        """transition_ticket (move) response must have history=[], not None."""
+        mock_time.time.return_value = FIXED_TIME
+        current = _make_ticket_row(status="backlog", type="task")
+        updated = _make_ticket_row(status="in_progress", type="task")
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchone.side_effect = [current, updated]
+
+        result = self.service.transition_ticket(conn, SCHEMA, 1, "in_progress")
+
+        assert result.history is not None, "history should not be None"
+        assert result.history == []
+
+    @patch("stompy_ticketing.service.time")
+    def test_transition_ticket_returns_empty_links_list(self, mock_time):
+        """transition_ticket (move) response must have links=[], not None."""
+        mock_time.time.return_value = FIXED_TIME
+        current = _make_ticket_row(status="backlog", type="task")
+        updated = _make_ticket_row(status="in_progress", type="task")
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchone.side_effect = [current, updated]
+
+        result = self.service.transition_ticket(conn, SCHEMA, 1, "in_progress")
+
+        assert result.links is not None, "links should not be None"
+        assert result.links == []
+
+    @patch("stompy_ticketing.service.time")
+    def test_update_ticket_returns_empty_history_list(self, mock_time):
+        """update_ticket response must have history=[], not None."""
+        mock_time.time.return_value = FIXED_TIME
+        current = _make_ticket_row(title="Old title")
+        updated = _make_ticket_row(title="New title")
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchone.side_effect = [current, updated]
+
+        data = TicketUpdate(title="New title")
+        result = self.service.update_ticket(conn, SCHEMA, 1, data, changed_by="user")
+
+        assert result.history is not None, "history should not be None"
+        assert result.history == []
+
+    @patch("stompy_ticketing.service.time")
+    def test_update_ticket_returns_empty_links_list(self, mock_time):
+        """update_ticket response must have links=[], not None."""
+        mock_time.time.return_value = FIXED_TIME
+        current = _make_ticket_row(title="Old title")
+        updated = _make_ticket_row(title="New title")
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchone.side_effect = [current, updated]
+
+        data = TicketUpdate(title="New title")
+        result = self.service.update_ticket(conn, SCHEMA, 1, data, changed_by="user")
+
+        assert result.links is not None, "links should not be None"
+        assert result.links == []
+
+    def test_row_to_response_defaults_history_to_empty_list(self):
+        """_row_to_response should produce a TicketResponse with history=[]."""
+        row = _make_ticket_row()
+        result = self.service._row_to_response(row)
+
+        assert result.history is not None, "history should not be None"
+        assert result.history == []
+
+    def test_row_to_response_defaults_links_to_empty_list(self):
+        """_row_to_response should produce a TicketResponse with links=[]."""
+        row = _make_ticket_row()
+        result = self.service._row_to_response(row)
+
+        assert result.links is not None, "links should not be None"
+        assert result.links == []
+
+    def test_get_ticket_still_returns_empty_lists(self):
+        """get_ticket must continue to return history=[] and links=[] (regression)."""
+        row = _make_ticket_row()
+        conn, cur = _mock_conn_and_cursor(fetchone_value=row)
+        cur.fetchall.return_value = []
+
+        result = self.service.get_ticket(conn, SCHEMA, 1)
+
+        assert result is not None
+        assert result.history == []
+        assert result.links == []
