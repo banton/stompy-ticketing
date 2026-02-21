@@ -52,6 +52,7 @@ def register_plugin(
         get_db_func=get_db_func,
         check_project_func=check_project_func,
         get_project_func=get_project_func,
+        resolve_schema_func=resolve_schema_func,
         notify_resolution_func=notify_resolution_func,
     )
     logger.info("stompy_ticketing: MCP tools registered (4 tools)")

@@ -43,6 +43,7 @@ def register_ticketing_tools(
     get_db_func: Callable,
     check_project_func: Callable,
     get_project_func: Callable,
+    resolve_schema_func: Optional[Callable] = None,
     notify_resolution_func: Optional[Callable] = None,
 ) -> None:
     """Register ticketing MCP tools on the given FastMCP instance.
@@ -52,10 +53,16 @@ def register_ticketing_tools(
         get_db_func: Function(project=None) -> context-manager DB connection.
         check_project_func: Function(project=None) -> error string or None.
         get_project_func: Function(project=None) -> project name string.
+        resolve_schema_func: Optional function(name) -> schema name. If None,
+            uses the project name directly as the schema.
         notify_resolution_func: Optional callback(report, new_status) for bug
             resolution emails on mcp_global tickets.
     """
     service = TicketService()
+
+    def _get_schema(project_name: str) -> str:
+        """Resolve project name to PostgreSQL schema name."""
+        return resolve_schema_func(project_name) if resolve_schema_func else project_name
 
     @mcp_instance.tool()
     async def ticket(
@@ -109,7 +116,7 @@ def register_ticketing_tools(
         try:
             project_name = get_project_func(project)
             with get_db_func(project) as conn:
-                schema = project_name
+                schema = _get_schema(project_name)
 
                 if action == "create":
                     if not title:
@@ -260,7 +267,7 @@ def register_ticketing_tools(
         try:
             project_name = get_project_func(project)
             with get_db_func(project) as conn:
-                schema = project_name
+                schema = _get_schema(project_name)
 
                 if action == "add":
                     if not ticket_id or not target_id:
@@ -333,7 +340,7 @@ def register_ticketing_tools(
         try:
             project_name = get_project_func(project)
             with get_db_func(project) as conn:
-                schema = project_name
+                schema = _get_schema(project_name)
                 result = service.board_view(
                     conn, schema, type_filter=type, view=view, status_filter=status
                 )
@@ -376,7 +383,7 @@ def register_ticketing_tools(
         try:
             project_name = get_project_func(project)
             with get_db_func(project) as conn:
-                schema = project_name
+                schema = _get_schema(project_name)
                 result = service.search_tickets(
                     conn, schema, query, type_filter=type, status_filter=status, limit=limit
                 )
