@@ -94,6 +94,7 @@ async def list_tickets(
     search: Optional[str] = Query(None),
     limit: int = Query(50, ge=1, le=200),
     offset: int = Query(0, ge=0),
+    include_archived: bool = Query(False),
 ):
     """List tickets with optional filters."""
     _require_db()
@@ -107,6 +108,7 @@ async def list_tickets(
             search=search,
             limit=limit,
             offset=offset,
+            include_archived=include_archived,
         )
         return _service.list_tickets(conn, schema, filters)
 
@@ -117,13 +119,20 @@ async def board_view(
     view: str = Query("kanban"),
     type: Optional[str] = Query(None),
     ticket_status: Optional[str] = Query(None, alias="status"),
+    include_terminal: bool = Query(False),
+    include_archived: bool = Query(False),
 ):
     """Get a kanban or summary board view."""
     _require_db()
     schema = _get_schema(name)
     with _get_db_for_project(name) as conn:
         return _service.board_view(
-            conn, schema, type_filter=type, view=view, status_filter=ticket_status
+            conn, schema,
+            type_filter=type,
+            view=view,
+            status_filter=ticket_status,
+            include_terminal=include_terminal,
+            include_archived=include_archived,
         )
 
 
@@ -134,14 +143,29 @@ async def search_tickets(
     type: Optional[str] = Query(None),
     ticket_status: Optional[str] = Query(None, alias="status"),
     limit: int = Query(20, ge=1, le=100),
+    include_archived: bool = Query(False),
 ):
     """Full-text search tickets."""
     _require_db()
     schema = _get_schema(name)
     with _get_db_for_project(name) as conn:
         return _service.search_tickets(
-            conn, schema, query, type_filter=type, status_filter=ticket_status, limit=limit
+            conn, schema, query,
+            type_filter=type,
+            status_filter=ticket_status,
+            limit=limit,
+            include_archived=include_archived,
         )
+
+
+@router.post("/archive")
+async def archive_tickets(name: str):
+    """Manually trigger archival of stale closed tickets."""
+    _require_db()
+    schema = _get_schema(name)
+    with _get_db_for_project(name) as conn:
+        count = _service.archive_stale_tickets(conn, schema)
+        return {"status": "archived", "count": count}
 
 
 @router.get("/{ticket_id}", response_model=TicketResponse)

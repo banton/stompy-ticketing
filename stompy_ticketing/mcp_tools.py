@@ -77,9 +77,10 @@ def register_ticketing_tools(
         ticket_id: Optional[int] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
+        include_archived: bool = False,
         project: Optional[str] = None,
     ) -> str:
-        """Create, read, update, move, list, or close tickets.
+        """Create, read, update, move, list, archive, or close tickets.
 
         **REQUIRES ACTIVE PROJECT** - Use project_switch() first or pass project param.
 
@@ -90,9 +91,10 @@ def register_ticketing_tools(
           move    - Transition status (ticket_id + status required)
           list    - List tickets (optional type/status/priority/assignee/limit/offset filters)
           close   - Close ticket (ticket_id required)
+          archive - Manually trigger archival of stale closed tickets
 
         Args:
-            action: create|get|update|move|list|close
+            action: create|get|update|move|list|close|archive
             title: Ticket title (create/update)
             description: Ticket description (create/update)
             type: task|bug|feature|decision (create filter, default: task)
@@ -103,6 +105,7 @@ def register_ticketing_tools(
             ticket_id: Ticket ID (get/update/move/close)
             limit: Max tickets to return for list (default: 20, max: 200)
             offset: Number of tickets to skip for list (default: 0)
+            include_archived: Include archived tickets in list results (default: false)
             project: Project name (default: active project)
 
         Returns: JSON with ticket data or list results (includes pagination: total, limit, offset, has_more)
@@ -113,6 +116,7 @@ def register_ticketing_tools(
             ticket(action="list", limit=10, offset=20)
             ticket(action="move", ticket_id=1, status="in_progress")
             ticket(action="close", ticket_id=1)
+            ticket(action="archive")
         """
         project_check = check_project_func(project)
         if project_check:
@@ -207,9 +211,18 @@ def register_ticketing_tools(
                         assignee=assignee,
                         limit=effective_limit,
                         offset=effective_offset,
+                        include_archived=include_archived,
                     )
                     result = service.list_tickets(conn, schema, filters)
                     return _safe_json(result)
+
+                elif action == "archive":
+                    count = service.archive_stale_tickets(conn, schema)
+                    return json.dumps({
+                        "status": "archived",
+                        "count": count,
+                        "message": f"Archived {count} stale ticket(s)",
+                    })
 
                 elif action == "close":
                     if not ticket_id:
@@ -223,7 +236,7 @@ def register_ticketing_tools(
                     return json.dumps(
                         {
                             "error": f"Unknown action: {action}",
-                            "valid_actions": ["create", "get", "update", "move", "list", "close"],
+                            "valid_actions": ["create", "get", "update", "move", "list", "close", "archive"],
                         }
                     )
 
@@ -319,11 +332,17 @@ def register_ticketing_tools(
         view: str = "kanban",
         type: Optional[str] = None,
         status: Optional[str] = None,
+        include_terminal: bool = False,
+        include_archived: bool = False,
         project: Optional[str] = None,
     ) -> str:
         """Get a dashboard view of tickets grouped by status.
 
         **REQUIRES ACTIVE PROJECT** - Use project_switch() first or pass project param.
+
+        By default, shows only active work — terminal statuses (done, resolved,
+        shipped, etc.) and archived tickets are excluded. Use include_terminal=true
+        or include_archived=true to see them.
 
         Descriptions are truncated to 200 chars in board views. Use
         ticket(action="get", id=N) to read full descriptions.
@@ -332,7 +351,9 @@ def register_ticketing_tools(
             view: "summary" (counts only), "kanban" (tickets with truncated descriptions),
                   or "detail" (alias for kanban — same truncated output)
             type: Filter by ticket type (task|bug|feature|decision)
-            status: Filter by status (e.g., "triage", "backlog", "in_progress")
+            status: Filter by specific status (e.g., "triage", "backlog", "in_progress")
+            include_terminal: Include terminal statuses like done/resolved/shipped (default: false)
+            include_archived: Include archived tickets (default: false)
             project: Project name (default: active project)
 
         Returns: JSON board view with columns grouped by status
@@ -341,6 +362,7 @@ def register_ticketing_tools(
             ticket_board(view="summary")
             ticket_board(status="triage")
             ticket_board(view="summary", type="task")
+            ticket_board(view="summary", include_terminal=true)
         """
         project_check = check_project_func(project)
         if project_check:
@@ -351,7 +373,12 @@ def register_ticketing_tools(
             with get_db_func(project) as conn:
                 schema = _get_schema(project_name)
                 result = service.board_view(
-                    conn, schema, type_filter=type, view=view, status_filter=status
+                    conn, schema,
+                    type_filter=type,
+                    view=view,
+                    status_filter=status,
+                    include_terminal=include_terminal,
+                    include_archived=include_archived,
                 )
                 return _safe_json(result)
 
@@ -366,17 +393,21 @@ def register_ticketing_tools(
         type: Optional[str] = None,
         status: Optional[str] = None,
         limit: int = 20,
+        include_archived: bool = False,
         project: Optional[str] = None,
     ) -> str:
         """Search tickets using full-text search (BM25).
 
         **REQUIRES ACTIVE PROJECT** - Use project_switch() first or pass project param.
 
+        By default, archived tickets are excluded. Use include_archived=true to search all.
+
         Args:
             query: Search query string
             type: Filter by ticket type
             status: Filter by status
             limit: Max results (default: 20)
+            include_archived: Include archived tickets (default: false)
             project: Project name (default: active project)
 
         Returns: JSON search results ranked by relevance
@@ -394,7 +425,11 @@ def register_ticketing_tools(
             with get_db_func(project) as conn:
                 schema = _get_schema(project_name)
                 result = service.search_tickets(
-                    conn, schema, query, type_filter=type, status_filter=status, limit=limit
+                    conn, schema, query,
+                    type_filter=type,
+                    status_filter=status,
+                    limit=limit,
+                    include_archived=include_archived,
                 )
                 return _safe_json(result)
 

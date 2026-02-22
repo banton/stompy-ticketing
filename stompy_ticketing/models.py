@@ -75,6 +75,7 @@ class TicketListFilters(BaseModel):
     search: Optional[str] = None
     limit: int = Field(20, ge=1, le=200)
     offset: int = Field(0, ge=0)
+    include_archived: bool = False
 
 
 # --------------------------------------------------------------------------- #
@@ -116,6 +117,7 @@ class TicketResponse(BaseModel):
     created_at: Optional[float] = None
     updated_at: Optional[float] = None
     closed_at: Optional[float] = None
+    archived_at: Optional[float] = None
     history: List[TicketHistoryEntry] = Field(default_factory=list)
     links: List[TicketLinkResponse] = Field(default_factory=list)
 
@@ -140,9 +142,12 @@ class BoardView(BaseModel):
     columns: List[BoardColumn]
     total: int
     type_filter: Optional[str] = None
+    include_archived: bool = False
+    archived_count: int = 0
 
 
 class SearchResult(BaseModel):
     tickets: List[TicketResponse]
     total: int
     query: str
+    include_archived: bool = False

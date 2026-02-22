@@ -23,6 +23,7 @@ from stompy_ticketing.models import (
 from stompy_ticketing.service import (
     InvalidTransitionError,
     TicketService,
+    get_all_terminal_statuses,
 )
 
 
@@ -50,6 +51,7 @@ def _make_ticket_row(
     closed_at=None,
     content_hash="abc123",
     content_tsvector=None,
+    archived_at=None,
 ):
     """Create a mock ticket row dict."""
     return {
@@ -68,6 +70,7 @@ def _make_ticket_row(
         "closed_at": closed_at,
         "content_hash": content_hash,
         "content_tsvector": content_tsvector,
+        "archived_at": archived_at,
     }
 
 
@@ -429,6 +432,7 @@ class TestCloseTicket:
 class TestListTickets:
     def setup_method(self):
         self.service = TicketService()
+        self.service.archive_stale_tickets = MagicMock(return_value=0)
 
     def test_list_returns_tickets(self):
         rows = [_make_ticket_row(id=1), _make_ticket_row(id=2)]
@@ -985,6 +989,7 @@ class TestListTicketsSearchFilter:
 
     def setup_method(self):
         self.service = TicketService()
+        self.service.archive_stale_tickets = MagicMock(return_value=0)
 
     def test_should_use_or_logic_for_list_search_filter(self):
         """list_tickets with search filter should also use OR logic."""
@@ -1134,3 +1139,298 @@ class TestHistoryLinksConsistency:
         assert result is not None
         assert result.history == []
         assert result.links == []
+
+
+# --------------------------------------------------------------------------- #
+# Archive: _row_to_response includes archived_at                               #
+# --------------------------------------------------------------------------- #
+
+
+class TestRowToResponseArchiveField:
+    def setup_method(self):
+        self.service = TicketService()
+
+    def test_includes_archived_at_when_present(self):
+        row = _make_ticket_row(archived_at=FIXED_TIME)
+        result = self.service._row_to_response(row)
+        assert result.archived_at == FIXED_TIME
+
+    def test_defaults_archived_at_to_none(self):
+        row = _make_ticket_row()
+        result = self.service._row_to_response(row)
+        assert result.archived_at is None
+
+    def test_handles_missing_archived_at_key(self):
+        row = _make_ticket_row()
+        del row["archived_at"]  # simulate old schema without column
+        result = self.service._row_to_response(row)
+        assert result.archived_at is None
+
+
+# --------------------------------------------------------------------------- #
+# Archive: archive_stale_tickets                                               #
+# --------------------------------------------------------------------------- #
+
+
+class TestArchiveStaleTickets:
+    def setup_method(self):
+        self.service = TicketService()
+
+    @patch("stompy_ticketing.service.time")
+    def test_archives_tickets_past_ttl(self, mock_time):
+        now = FIXED_TIME + 2_000_000
+        mock_time.time.return_value = now
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchall.return_value = [
+            {"id": 1, "type": "task", "status": "done"},
+            {"id": 2, "type": "bug", "status": "resolved"},
+        ]
+
+        count = self.service.archive_stale_tickets(conn, SCHEMA)
+
+        assert count == 2
+        conn.commit.assert_called_once()
+
+    @patch("stompy_ticketing.service.time")
+    def test_skips_recently_closed_tickets(self, mock_time):
+        mock_time.time.return_value = FIXED_TIME
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchall.return_value = []  # nothing past TTL
+
+        count = self.service.archive_stale_tickets(conn, SCHEMA)
+
+        assert count == 0
+
+    @patch("stompy_ticketing.service.time")
+    def test_does_not_re_archive_already_archived(self, mock_time):
+        mock_time.time.return_value = FIXED_TIME + 2_000_000
+        conn, cur = _mock_conn_and_cursor()
+        # SQL has WHERE archived_at IS NULL, so already-archived won't appear
+        cur.fetchall.return_value = []
+
+        count = self.service.archive_stale_tickets(conn, SCHEMA)
+
+        assert count == 0
+
+    @patch("stompy_ticketing.service.time")
+    def test_records_history_entries(self, mock_time):
+        now = FIXED_TIME + 2_000_000
+        mock_time.time.return_value = now
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchall.return_value = [
+            {"id": 1, "type": "task", "status": "done"},
+        ]
+
+        self.service.archive_stale_tickets(conn, SCHEMA)
+
+        # Should have: 1 UPDATE (batch) + 1 INSERT history
+        assert cur.execute.call_count >= 2
+
+    @patch("stompy_ticketing.service.time")
+    def test_rollback_on_error(self, mock_time):
+        mock_time.time.return_value = FIXED_TIME + 2_000_000
+        conn, cur = _mock_conn_and_cursor()
+        cur.execute.side_effect = Exception("DB error")
+
+        with pytest.raises(Exception, match="DB error"):
+            self.service.archive_stale_tickets(conn, SCHEMA)
+
+        conn.rollback.assert_called_once()
+
+    @patch("stompy_ticketing.service.time")
+    def test_custom_ttl(self, mock_time):
+        now = FIXED_TIME + 100
+        mock_time.time.return_value = now
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchall.return_value = [
+            {"id": 1, "type": "task", "status": "done"},
+        ]
+
+        count = self.service.archive_stale_tickets(conn, SCHEMA, ttl_seconds=50)
+
+        assert count == 1
+        # Verify the cutoff param uses our custom TTL
+        first_call_params = cur.execute.call_args_list[0][0][1]
+        assert now - 50 in first_call_params
+
+
+# --------------------------------------------------------------------------- #
+# Archive: list_tickets archive filter                                         #
+# --------------------------------------------------------------------------- #
+
+
+class TestListTicketsArchiveFilter:
+    def setup_method(self):
+        self.service = TicketService()
+        self.service.archive_stale_tickets = MagicMock(return_value=0)
+
+    def test_excludes_archived_by_default(self):
+        rows = [_make_ticket_row(id=1)]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchone.side_effect = [{"count": 1}]
+        cur.fetchall.side_effect = [
+            rows,
+            [{"status": "backlog", "count": 1}],
+            [{"type": "task", "count": 1}],
+        ]
+
+        filters = TicketListFilters()
+        result = self.service.list_tickets(conn, SCHEMA, filters)
+
+        # Verify SQL includes archived_at IS NULL filter
+        first_sql = _sql_to_str(cur.execute.call_args_list[0][0][0])
+        assert "archived_at IS NULL" in first_sql
+
+    def test_includes_archived_when_requested(self):
+        rows = [_make_ticket_row(id=1, archived_at=FIXED_TIME)]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchone.side_effect = [{"count": 1}]
+        cur.fetchall.side_effect = [
+            rows,
+            [{"status": "done", "count": 1}],
+            [{"type": "task", "count": 1}],
+        ]
+
+        filters = TicketListFilters(include_archived=True)
+        result = self.service.list_tickets(conn, SCHEMA, filters)
+
+        first_sql = _sql_to_str(cur.execute.call_args_list[0][0][0])
+        assert "archived_at IS NULL" not in first_sql
+
+
+# --------------------------------------------------------------------------- #
+# Archive: search_tickets archive filter                                       #
+# --------------------------------------------------------------------------- #
+
+
+class TestSearchTicketsArchiveFilter:
+    def setup_method(self):
+        self.service = TicketService()
+        self.service.archive_stale_tickets = MagicMock(return_value=0)
+
+    def test_excludes_archived_by_default(self):
+        rows = []
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        result = self.service.search_tickets(conn, SCHEMA, "test")
+
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
+        assert "archived_at IS NULL" in executed_sql
+
+    def test_includes_archived_when_requested(self):
+        rows = []
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        result = self.service.search_tickets(
+            conn, SCHEMA, "test", include_archived=True
+        )
+
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
+        assert "archived_at IS NULL" not in executed_sql
+
+
+# --------------------------------------------------------------------------- #
+# Archive: board_view terminal filter                                          #
+# --------------------------------------------------------------------------- #
+
+
+class TestBoardViewTerminalFilter:
+    def setup_method(self):
+        self.service = TicketService()
+        self.service.archive_stale_tickets = MagicMock(return_value=0)
+
+    def test_excludes_terminal_statuses_by_default(self):
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchall.return_value = [
+            {"status": "backlog", "count": 3},
+            {"status": "in_progress", "count": 1},
+        ]
+
+        result = self.service.board_view(conn, SCHEMA, view="summary")
+
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
+        assert "status NOT IN" in executed_sql
+
+    def test_includes_terminal_when_requested(self):
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchall.return_value = [
+            {"status": "backlog", "count": 3},
+            {"status": "done", "count": 2},
+        ]
+
+        result = self.service.board_view(
+            conn, SCHEMA, view="summary", include_terminal=True
+        )
+
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
+        assert "status NOT IN" not in executed_sql
+
+    def test_respects_explicit_status_filter(self):
+        """When user explicitly asks for a status, don't filter it out."""
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchall.return_value = [
+            {"status": "done", "count": 5},
+        ]
+
+        result = self.service.board_view(
+            conn, SCHEMA, view="summary", status_filter="done"
+        )
+
+        # Should NOT add terminal exclusion when status_filter is explicit
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
+        assert "status NOT IN" not in executed_sql
+
+    def test_type_specific_terminal_exclusion(self):
+        """Terminal exclusion should only exclude terminals for the given type."""
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchall.return_value = [
+            {"status": "triage", "count": 2},
+            {"status": "confirmed", "count": 1},
+        ]
+
+        result = self.service.board_view(
+            conn, SCHEMA, type_filter="bug", view="summary"
+        )
+
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
+        assert "status NOT IN" in executed_sql
+        # Verify the params include bug terminal statuses
+        executed_params = cur.execute.call_args[0][1]
+        # bug + type param should be in params
+        assert "bug" in executed_params
+
+    def test_excludes_archived_by_default(self):
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchall.return_value = [
+            {"status": "backlog", "count": 3},
+        ]
+
+        result = self.service.board_view(conn, SCHEMA, view="summary")
+
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
+        assert "archived_at IS NULL" in executed_sql
+
+    def test_includes_archived_when_requested(self):
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchall.return_value = [
+            {"status": "backlog", "count": 3},
+        ]
+
+        result = self.service.board_view(
+            conn, SCHEMA, view="summary", include_archived=True
+        )
+
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
+        assert "archived_at IS NULL" not in executed_sql
+
+    def test_board_view_returns_archived_count(self):
+        conn, cur = _mock_conn_and_cursor()
+        # archived_count query uses fetchone, main query uses fetchall
+        cur.fetchone.side_effect = [{"count": 5}]
+        cur.fetchall.return_value = [{"status": "backlog", "count": 3}]
+
+        result = self.service.board_view(conn, SCHEMA, view="summary")
+
+        assert result.archived_count == 5
