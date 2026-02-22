@@ -9,7 +9,7 @@ from typing import Any, Callable, Dict, List, Optional
 
 from stompy_ticketing.api_routes import configure_routes, router
 from stompy_ticketing.mcp_tools import register_ticketing_tools
-from stompy_ticketing.migrations import get_ticket_migrations
+from stompy_ticketing.migrations import get_archive_migrations, get_ticket_migrations
 from stompy_ticketing.schema import get_all_ticket_tables_sql
 
 logger = logging.getLogger(__name__)
@@ -66,7 +66,9 @@ def register_plugin(
     logger.info("stompy_ticketing: REST API routes mounted")
 
     # 3. Return migration definitions and schema SQL
+    migrations = get_ticket_migrations()
+    migrations.extend(get_archive_migrations())
     return {
-        "migrations": get_ticket_migrations(),
+        "migrations": migrations,
         "schema_sql_func": get_all_ticket_tables_sql,
     }

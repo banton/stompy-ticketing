@@ -108,6 +108,14 @@ def get_all_statuses(ticket_type: str) -> List[str]:
     return list(STATE_MACHINES[ticket_type]["transitions"].keys())
 
 
+def get_all_terminal_statuses() -> List[str]:
+    """Get all terminal statuses across all ticket types (deduplicated)."""
+    terminals = set()
+    for sm in STATE_MACHINES.values():
+        terminals.update(sm["terminal"])
+    return sorted(terminals)
+
+
 def validate_transition(
     ticket_type: str,
     current_status: str,
@@ -530,6 +538,85 @@ class TicketService:
             f"Allowed transitions: {allowed}"
         )
 
+    def archive_stale_tickets(
+        self,
+        conn: DBConnection,
+        schema: str,
+        ttl_seconds: int = 1_209_600,
+    ) -> int:
+        """Archive tickets in terminal status past the TTL.
+
+        Sets archived_at on tickets where closed_at < now - ttl and
+        archived_at IS NULL. Records history entries for each.
+
+        Args:
+            conn: Database connection.
+            schema: PostgreSQL schema name.
+            ttl_seconds: Seconds after close before archival (default 14 days).
+
+        Returns:
+            Number of tickets archived.
+        """
+        cur = conn.cursor()
+        try:
+            now = time.time()
+            cutoff = now - ttl_seconds
+
+            # Find stale tickets not yet archived
+            all_terminals = get_all_terminal_statuses()
+            terminal_placeholders = ", ".join(["%s"] * len(all_terminals))
+
+            cur.execute(
+                sql.SQL("""
+                SELECT id, type, status FROM {}.tickets
+                WHERE closed_at IS NOT NULL
+                  AND closed_at < %s
+                  AND archived_at IS NULL
+                  AND status IN ({})
+                """).format(
+                    sql.Identifier(schema),
+                    sql.SQL(terminal_placeholders),
+                ),
+                [cutoff] + all_terminals,
+            )
+            stale = cur.fetchall()
+
+            if not stale:
+                return 0
+
+            stale_ids = [r["id"] for r in stale]
+            id_placeholders = ", ".join(["%s"] * len(stale_ids))
+
+            # Batch update archived_at
+            cur.execute(
+                sql.SQL("""
+                UPDATE {}.tickets
+                SET archived_at = %s
+                WHERE id IN ({})
+                """).format(
+                    sql.Identifier(schema),
+                    sql.SQL(id_placeholders),
+                ),
+                [now] + stale_ids,
+            )
+
+            # Record history entries
+            for ticket in stale:
+                cur.execute(
+                    sql.SQL("""
+                    INSERT INTO {}.ticket_history
+                        (ticket_id, field_name, old_value, new_value, changed_by, changed_at)
+                    VALUES (%s, %s, %s, %s, %s, %s)
+                    """).format(sql.Identifier(schema)),
+                    (ticket["id"], "archived_at", None, str(now), "system:auto_archive", now),
+                )
+
+            conn.commit()
+            return len(stale_ids)
+        except Exception:
+            conn.rollback()
+            raise
+
     def list_tickets(
         self,
         conn: DBConnection,
@@ -549,9 +636,18 @@ class TicketService:
         if filters is None:
             filters = TicketListFilters()
 
+        # Lazy archive trigger
+        try:
+            self.archive_stale_tickets(conn, schema)
+        except Exception:
+            pass  # Archive failure should not break list
+
         cur = conn.cursor()
         where_clauses: List[str] = []
         params: List[Any] = []
+
+        if not filters.include_archived:
+            where_clauses.append("archived_at IS NULL")
 
         if filters.type:
             where_clauses.append("type = %s")
@@ -671,6 +767,7 @@ class TicketService:
         type_filter: Optional[str] = None,
         status_filter: Optional[str] = None,
         limit: int = 20,
+        include_archived: bool = False,
     ) -> SearchResult:
         """Full-text search tickets using tsvector with OR-based ranking.
 
@@ -685,15 +782,25 @@ class TicketService:
             type_filter: Filter by type.
             status_filter: Filter by status.
             limit: Max results.
+            include_archived: Include archived tickets (default False).
 
         Returns:
             Search results ranked by relevance.
         """
+        # Lazy archive trigger
+        try:
+            self.archive_stale_tickets(conn, schema)
+        except Exception:
+            pass
+
         cur = conn.cursor()
         tsquery_param = self._build_or_tsquery_param(query)
 
         where_clauses = ["content_tsvector @@ to_tsquery('english', %s)"]
         params: List[Any] = [tsquery_param]
+
+        if not include_archived:
+            where_clauses.append("archived_at IS NULL")
 
         if type_filter:
             where_clauses.append("type = %s")
@@ -721,6 +828,7 @@ class TicketService:
             tickets=[self._row_to_response(r) for r in rows],
             total=len(rows),
             query=query,
+            include_archived=include_archived,
         )
 
     # Maximum description length in board view responses (chars).
@@ -734,6 +842,8 @@ class TicketService:
         type_filter: Optional[str] = None,
         view: str = "kanban",
         status_filter: Optional[str] = None,
+        include_terminal: bool = False,
+        include_archived: bool = False,
     ) -> BoardView:
         """Get a kanban board view of tickets grouped by status.
 
@@ -744,23 +854,57 @@ class TicketService:
             view: "kanban" (full tickets), "summary" (counts only),
                   or "detail" (like kanban but with truncated descriptions).
             status_filter: Filter by status (e.g., "triage", "backlog").
+            include_terminal: Include terminal statuses (default False).
+            include_archived: Include archived tickets (default False).
 
         Returns:
             Board view with columns.
         """
+        # Lazy archive trigger
+        try:
+            self.archive_stale_tickets(conn, schema)
+        except Exception:
+            pass
+
         cur = conn.cursor()
         conditions: List[str] = []
         params: List[Any] = []
+
+        if not include_archived:
+            conditions.append("archived_at IS NULL")
 
         if type_filter:
             conditions.append("type = %s")
             params.append(type_filter)
 
         if status_filter:
+            # Explicit status filter — don't add terminal exclusion
             conditions.append("status = %s")
             params.append(status_filter)
+        elif not include_terminal:
+            # Exclude terminal statuses
+            if type_filter and type_filter in STATE_MACHINES:
+                terminals = get_terminal_statuses(type_filter)
+            else:
+                terminals = get_all_terminal_statuses()
+            if terminals:
+                placeholders = ", ".join(["%s"] * len(terminals))
+                conditions.append(f"status NOT IN ({placeholders})")
+                params.extend(terminals)
 
         where_sql = f"WHERE {' AND '.join(conditions)}" if conditions else ""
+
+        # Get archived count for display
+        archived_count = 0
+        try:
+            cur.execute(
+                sql.SQL(
+                    "SELECT COUNT(*) as count FROM {}.tickets WHERE archived_at IS NOT NULL"
+                ).format(sql.Identifier(schema)),
+            )
+            archived_count = cur.fetchone()["count"]
+        except Exception:
+            pass
 
         if view == "summary":
             cur.execute(
@@ -833,6 +977,8 @@ class TicketService:
             columns=columns,
             total=total,
             type_filter=type_filter,
+            include_archived=include_archived,
+            archived_count=archived_count,
         )
 
     # --- Link operations --- #
@@ -991,6 +1137,7 @@ class TicketService:
             created_at=row.get("created_at"),
             updated_at=row.get("updated_at"),
             closed_at=row.get("closed_at"),
+            archived_at=row.get("archived_at"),
         )
 
     def _link_row_to_response(self, row: Dict[str, Any]) -> TicketLinkResponse:

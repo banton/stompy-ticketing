@@ -19,6 +19,36 @@ CUSTOM = "custom"
 PROJECT_SCHEMA = "project"
 
 
+def get_archive_migrations(start_id: int = 41) -> List[Dict[str, Any]]:
+    """Get migration definitions for ticket archival support.
+
+    Args:
+        start_id: Starting migration ID. Default 41 (after last core migration 39).
+
+    Returns:
+        List of migration dictionaries.
+    """
+    return [
+        # Migration N: Add archived_at column to tickets
+        {
+            "id": start_id,
+            "description": "add_tickets_archived_at",
+            "type": ADD_COLUMN,
+            "table": "tickets",
+            "schema": PROJECT_SCHEMA,
+            "spec": {
+                "column": "archived_at",
+                "definition": "DOUBLE PRECISION",
+                "index": {
+                    "name": "idx_tickets_archived_at",
+                    "columns": ["archived_at"],
+                    "where": "archived_at IS NOT NULL",
+                },
+            },
+        },
+    ]
+
+
 def get_ticket_migrations(start_id: int = 26) -> List[Dict[str, Any]]:
     """Get migration definitions for ticket tables.
 

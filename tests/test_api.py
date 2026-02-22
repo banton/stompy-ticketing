@@ -127,7 +127,8 @@ class TestCreateTicketAPI:
 
 @pytest.mark.asyncio
 class TestListTicketsAPI:
-    async def test_list_tickets(self):
+    @patch("stompy_ticketing.api_routes._service.archive_stale_tickets", return_value=0)
+    async def test_list_tickets(self, mock_archive):
         rows = [_make_ticket_row(id=1), _make_ticket_row(id=2)]
         conn, cur = _make_mock_conn(rows=rows)
         cur.fetchone.side_effect = [{"count": 2}]

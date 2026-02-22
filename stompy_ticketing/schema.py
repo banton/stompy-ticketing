@@ -27,6 +27,7 @@ def get_tickets_table_sql(schema: str) -> sql.Composed:
             created_at DOUBLE PRECISION,
             updated_at DOUBLE PRECISION,
             closed_at DOUBLE PRECISION,
+            archived_at DOUBLE PRECISION,
             content_hash TEXT,
             content_tsvector tsvector,
             FOREIGN KEY (session_id) REFERENCES {}.sessions(id)

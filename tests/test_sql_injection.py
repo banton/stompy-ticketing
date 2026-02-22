@@ -124,6 +124,7 @@ class TestServiceUsesIdentifier:
 
     def setup_method(self):
         self.service = TicketService()
+        self.service.archive_stale_tickets = MagicMock(return_value=0)
 
     @patch("stompy_ticketing.service.time")
     def test_create_ticket_uses_identifier(self, mock_time):

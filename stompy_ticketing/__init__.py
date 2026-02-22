@@ -17,7 +17,7 @@ from stompy_ticketing.schema import (
     get_ticket_links_table_sql,
 )
 
-__version__ = "0.1.0"
+__version__ = "0.3.0"
 
 __all__ = [
     "TicketService",
