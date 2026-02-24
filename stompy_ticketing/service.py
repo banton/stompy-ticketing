@@ -287,24 +287,7 @@ class TicketService:
         response = self._row_to_response(row)
 
         if include_history:
-            cur.execute(
-                sql.SQL("""
-                SELECT * FROM {}.ticket_history
-                WHERE ticket_id = %s ORDER BY changed_at DESC
-                """).format(sql.Identifier(schema)),
-                (ticket_id,),
-            )
-            response.history = [
-                TicketHistoryEntry(
-                    id=h["id"],
-                    field_name=h["field_name"],
-                    old_value=h["old_value"],
-                    new_value=h["new_value"],
-                    changed_by=h["changed_by"],
-                    changed_at=h["changed_at"],
-                )
-                for h in cur.fetchall()
-            ]
+            response.history = self._fetch_history(cur, schema, ticket_id)
 
         if include_links:
             response.links = self._get_links_for_ticket(cur, schema, ticket_id)
@@ -411,7 +394,9 @@ class TicketService:
                 )
 
             conn.commit()
-            return self._row_to_response(updated_row)
+            response = self._row_to_response(updated_row)
+            response.history = self._fetch_history(cur, schema, ticket_id)
+            return response
         except Exception:
             conn.rollback()
             raise
@@ -482,7 +467,9 @@ class TicketService:
             )
 
             conn.commit()
-            return self._row_to_response(updated_row)
+            response = self._row_to_response(updated_row)
+            response.history = self._fetch_history(cur, schema, ticket_id)
+            return response
         except Exception:
             conn.rollback()
             raise
@@ -1085,6 +1072,36 @@ class TicketService:
         return self._get_links_for_ticket(cur, schema, ticket_id)
 
     # --- Helpers --- #
+
+    def _fetch_history(self, cur, schema: str, ticket_id: int) -> List[TicketHistoryEntry]:
+        """Fetch history entries for a ticket, ordered newest first.
+
+        Args:
+            cur: Database cursor (RealDictCursor).
+            schema: PostgreSQL schema name.
+            ticket_id: Ticket ID.
+
+        Returns:
+            List of TicketHistoryEntry objects.
+        """
+        cur.execute(
+            sql.SQL("""
+            SELECT * FROM {}.ticket_history
+            WHERE ticket_id = %s ORDER BY changed_at DESC
+            """).format(sql.Identifier(schema)),
+            (ticket_id,),
+        )
+        return [
+            TicketHistoryEntry(
+                id=h["id"],
+                field_name=h["field_name"],
+                old_value=h["old_value"],
+                new_value=h["new_value"],
+                changed_by=h["changed_by"],
+                changed_at=h["changed_at"],
+            )
+            for h in cur.fetchall()
+        ]
 
     def _get_links_for_ticket(
         self, cur: Any, schema: str, ticket_id: int
