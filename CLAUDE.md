@@ -14,8 +14,8 @@ This project uses its own ticketing system for development orchestration.
 
 ### Session Start
 ```python
-mcp__stompy__project_switch(name="stompy_ticketing")
-mcp__stompy__recall_context("ticketing_architecture_overview")
+# Pass project="stompy_ticketing" on each tool call rather than using project_switch
+mcp__stompy__recall_context("ticketing_architecture_overview", project="stompy_ticketing")
 ```
 
 ### Claiming Work
