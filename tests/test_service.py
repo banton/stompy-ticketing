@@ -1434,3 +1434,118 @@ class TestBoardViewTerminalFilter:
         result = self.service.board_view(conn, SCHEMA, view="summary")
 
         assert result.archived_count == 5
+
+
+# --------------------------------------------------------------------------- #
+# History returned from mutations (Bug #139)                                   #
+# --------------------------------------------------------------------------- #
+class TestHistoryReturnedFromMutations:
+    """Verify update_ticket, transition_ticket, and close_ticket return history."""
+
+    def setup_method(self):
+        self.service = TicketService()
+
+    @patch("stompy_ticketing.service.time")
+    def test_update_ticket_returns_history(self, mock_time):
+        """update_ticket should return history entries after commit."""
+        mock_time.time.return_value = FIXED_TIME
+        current = _make_ticket_row(title="Old title")
+        updated = _make_ticket_row(title="New title")
+        history_row = _make_history_row(
+            field_name="title",
+            old_value="Old title",
+            new_value="New title",
+            changed_by="user",
+        )
+
+        conn, cur = _mock_conn_and_cursor()
+        # fetchone: get current, then updated
+        cur.fetchone.side_effect = [current, updated]
+        # fetchall: called by _fetch_history after commit
+        cur.fetchall.return_value = [history_row]
+
+        data = TicketUpdate(title="New title")
+        result = self.service.update_ticket(conn, SCHEMA, 1, data, changed_by="user")
+
+        assert len(result.history) == 1
+        assert result.history[0].field_name == "title"
+        assert result.history[0].old_value == "Old title"
+        assert result.history[0].new_value == "New title"
+
+    @patch("stompy_ticketing.service.time")
+    def test_transition_ticket_returns_history(self, mock_time):
+        """transition_ticket should return history entries after commit."""
+        mock_time.time.return_value = FIXED_TIME
+        current = _make_ticket_row(status="backlog", type="task")
+        updated = _make_ticket_row(status="in_progress", type="task")
+        history_row = _make_history_row(
+            field_name="status",
+            old_value="backlog",
+            new_value="in_progress",
+            changed_by="agent",
+        )
+
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchone.side_effect = [current, updated]
+        # fetchall: called by _fetch_history after commit
+        cur.fetchall.return_value = [history_row]
+
+        result = self.service.transition_ticket(conn, SCHEMA, 1, "in_progress")
+
+        assert len(result.history) == 1
+        assert result.history[0].field_name == "status"
+        assert result.history[0].old_value == "backlog"
+        assert result.history[0].new_value == "in_progress"
+
+    @patch("stompy_ticketing.service.time")
+    def test_close_ticket_returns_history(self, mock_time):
+        """close_ticket delegates to transition_ticket which should return history."""
+        mock_time.time.return_value = FIXED_TIME
+        # close_ticket flow:
+        # 1. close_ticket: cur.fetchone() -> type/status check
+        # 2. transition_ticket: cur.fetchone() -> get current ticket
+        # 3. transition_ticket: cur.fetchone() -> RETURNING updated row
+        # 4. transition_ticket: cur.fetchall() -> _fetch_history
+        type_status_row = {"type": "task", "status": "backlog"}
+        current = _make_ticket_row(status="backlog", type="task")
+        updated = _make_ticket_row(status="done", type="task", closed_at=FIXED_TIME)
+        history_row = _make_history_row(
+            field_name="status",
+            old_value="backlog",
+            new_value="done",
+            changed_by="system",
+        )
+
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchone.side_effect = [type_status_row, current, updated]
+        cur.fetchall.return_value = [history_row]
+
+        result = self.service.close_ticket(conn, SCHEMA, 1, changed_by="system")
+
+        assert result is not None
+        assert len(result.history) == 1
+        assert result.history[0].field_name == "status"
+
+    def test_fetch_history_helper_returns_entries(self):
+        """_fetch_history should query ticket_history and return TicketHistoryEntry objects."""
+        conn, cur = _mock_conn_and_cursor()
+        history_rows = [
+            _make_history_row(id=1, field_name="status", old_value="backlog", new_value="in_progress"),
+            _make_history_row(id=2, field_name="priority", old_value="medium", new_value="high"),
+        ]
+        cur.fetchall.return_value = history_rows
+
+        result = self.service._fetch_history(cur, SCHEMA, 1)
+
+        assert len(result) == 2
+        assert result[0].field_name == "status"
+        assert result[1].field_name == "priority"
+
+    def test_fetch_history_helper_returns_empty_for_no_history(self):
+        """_fetch_history should return empty list when no history exists."""
+        conn, cur = _mock_conn_and_cursor()
+        cur.fetchall.return_value = []
+
+        result = self.service._fetch_history(cur, SCHEMA, 1)
+
+        assert result == []
