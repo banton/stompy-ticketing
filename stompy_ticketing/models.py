@@ -151,3 +151,20 @@ class SearchResult(BaseModel):
     total: int
     query: str
     include_archived: bool = False
+
+
+class BatchItemResult(BaseModel):
+    ticket_id: int
+    success: bool
+    error: Optional[str] = None
+    old_status: Optional[str] = None
+    new_status: Optional[str] = None
+
+
+class BatchOperationResult(BaseModel):
+    action: str
+    total: int
+    succeeded: int
+    failed: int
+    results: List[BatchItemResult] = Field(default_factory=list)
+    dry_run: bool = True

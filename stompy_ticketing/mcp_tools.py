@@ -75,34 +75,45 @@ def register_ticketing_tools(
         assignee: Optional[str] = None,
         tags: Optional[str] = None,
         ticket_id: Optional[int] = None,
+        ticket_ids: Optional[str] = None,
+        confirm: bool = False,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
         include_archived: bool = False,
         project: Optional[str] = None,
     ) -> str:
-        """Create, read, update, move, list, archive, or close tickets.
+        """Create, read, update, move, list, archive, close, or batch-operate tickets.
 
         **REQUIRES ACTIVE PROJECT** - Use project_switch() first or pass project param.
 
         Actions:
-          create  - Create ticket (title required, type defaults to 'task')
-          get     - Get ticket by ID (ticket_id required)
-          update  - Update ticket fields (ticket_id required)
-          move    - Transition status (ticket_id + status required)
-          list    - List tickets (optional type/status/priority/assignee/limit/offset filters)
-          close   - Close ticket (ticket_id required)
-          archive - Manually trigger archival of stale closed tickets
+          create      - Create ticket (title required, type defaults to 'task')
+          get         - Get ticket by ID (ticket_id required)
+          update      - Update ticket fields (ticket_id required)
+          move        - Transition status (ticket_id + status required)
+          list        - List tickets (optional type/status/priority/assignee/limit/offset filters)
+          close       - Close ticket (ticket_id required)
+          archive     - Manually trigger archival of stale closed tickets
+          batch_move  - Move multiple tickets to status (ticket_ids + status required)
+          batch_close - Close multiple tickets (ticket_ids required)
+
+        Batch operations use two-phase confirmation:
+          1. Default (confirm=false): Preview what would happen
+          2. confirm=true: Execute the batch operation
+          Max 50 tickets per batch.
 
         Args:
-            action: create|get|update|move|list|close|archive
+            action: create|get|update|move|list|close|archive|batch_move|batch_close
             title: Ticket title (create/update)
             description: Ticket description (create/update)
             type: task|bug|feature|decision (create filter, default: task)
             priority: urgent|high|medium|low|none (create/update/filter)
-            status: Target status for move, or filter for list
+            status: Target status for move/batch_move, or filter for list
             assignee: Assignee name (create/update/filter)
             tags: Comma-separated tags (create/update)
             ticket_id: Ticket ID (get/update/move/close)
+            ticket_ids: Comma-separated ticket IDs (batch_move/batch_close)
+            confirm: Execute batch operation (default: false = preview only)
             limit: Max tickets to return for list (default: 20, max: 200)
             offset: Number of tickets to skip for list (default: 0)
             include_archived: Include archived tickets in list results (default: false)
@@ -113,10 +124,12 @@ def register_ticketing_tools(
         Examples:
             ticket(action="create", title="Fix login bug", type="bug", priority="high")
             ticket(action="list", type="task", status="in_progress")
-            ticket(action="list", limit=10, offset=20)
             ticket(action="move", ticket_id=1, status="in_progress")
             ticket(action="close", ticket_id=1)
-            ticket(action="archive")
+            ticket(action="batch_move", ticket_ids="1,2,3", status="in_progress")
+            ticket(action="batch_move", ticket_ids="1,2,3", status="in_progress", confirm=true)
+            ticket(action="batch_close", ticket_ids="4,5,6")
+            ticket(action="batch_close", ticket_ids="4,5,6", confirm=true)
         """
         project_check = check_project_func(project)
         if project_check:
@@ -232,11 +245,44 @@ def register_ticketing_tools(
                         return json.dumps({"error": f"Ticket {ticket_id} not found"})
                     return _safe_json({"status": "closed", "ticket": result.model_dump()})
 
+                elif action == "batch_move":
+                    if not ticket_ids or not status:
+                        return json.dumps(
+                            {"error": "ticket_ids and status are required for batch_move"}
+                        )
+                    try:
+                        parsed_ids = [int(x.strip()) for x in ticket_ids.split(",")]
+                    except ValueError:
+                        return json.dumps({"error": "ticket_ids must be comma-separated integers"})
+                    result = service.batch_transition(
+                        conn, schema, parsed_ids, status,
+                        confirm=confirm,
+                    )
+                    return _safe_json(result)
+
+                elif action == "batch_close":
+                    if not ticket_ids:
+                        return json.dumps(
+                            {"error": "ticket_ids is required for batch_close"}
+                        )
+                    try:
+                        parsed_ids = [int(x.strip()) for x in ticket_ids.split(",")]
+                    except ValueError:
+                        return json.dumps({"error": "ticket_ids must be comma-separated integers"})
+                    result = service.batch_close(
+                        conn, schema, parsed_ids,
+                        confirm=confirm,
+                    )
+                    return _safe_json(result)
+
                 else:
                     return json.dumps(
                         {
                             "error": f"Unknown action: {action}",
-                            "valid_actions": ["create", "get", "update", "move", "list", "close", "archive"],
+                            "valid_actions": [
+                                "create", "get", "update", "move", "list",
+                                "close", "archive", "batch_move", "batch_close",
+                            ],
                         }
                     )
 
