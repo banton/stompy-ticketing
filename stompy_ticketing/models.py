@@ -67,6 +67,19 @@ class TicketLinkCreate(BaseModel):
     link_type: LinkType = LinkType.related
 
 
+class BatchMoveRequest(BaseModel):
+    ticket_ids: List[int] = Field(..., min_length=1, max_length=50)
+    status: str
+    confirm: bool = False
+    note: Optional[str] = None
+
+
+class BatchCloseRequest(BaseModel):
+    ticket_ids: List[int] = Field(..., min_length=1, max_length=50)
+    confirm: bool = False
+    note: Optional[str] = None
+
+
 class TicketListFilters(BaseModel):
     type: Optional[TicketType] = None
     status: Optional[str] = None
