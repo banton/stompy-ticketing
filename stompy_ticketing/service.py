@@ -14,6 +14,8 @@ from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 from psycopg2 import sql
 
 from stompy_ticketing.models import (
+    BatchItemResult,
+    BatchOperationResult,
     BoardColumn,
     BoardView,
     Priority,
@@ -967,6 +969,268 @@ class TicketService:
             include_archived=include_archived,
             archived_count=archived_count,
         )
+
+    # --- Batch operations --- #
+
+    BATCH_MAX = 50  # Safety cap for batch operations
+
+    def batch_transition(
+        self,
+        conn: DBConnection,
+        schema: str,
+        ticket_ids: List[int],
+        target_status: str,
+        confirm: bool = False,
+        changed_by: Optional[str] = None,
+    ) -> BatchOperationResult:
+        """Move multiple tickets to a target status.
+
+        Two-phase: preview (default) shows what would happen, confirm=True executes.
+
+        Args:
+            conn: Database connection.
+            schema: PostgreSQL schema name.
+            ticket_ids: List of ticket IDs to transition.
+            target_status: Target status for all tickets.
+            confirm: If False (default), dry-run preview. If True, execute.
+            changed_by: Who made the change.
+
+        Returns:
+            BatchOperationResult with per-ticket results.
+        """
+        if len(ticket_ids) > self.BATCH_MAX:
+            return BatchOperationResult(
+                action="batch_move",
+                total=len(ticket_ids),
+                succeeded=0,
+                failed=len(ticket_ids),
+                results=[BatchItemResult(
+                    ticket_id=0, success=False,
+                    error=f"Batch size {len(ticket_ids)} exceeds max {self.BATCH_MAX}",
+                )],
+                dry_run=not confirm,
+            )
+
+        results: List[BatchItemResult] = []
+        succeeded = 0
+        failed = 0
+
+        for tid in ticket_ids:
+            cur = conn.cursor()
+            cur.execute(
+                sql.SQL("SELECT type, status FROM {}.tickets WHERE id = %s").format(
+                    sql.Identifier(schema)
+                ),
+                (tid,),
+            )
+            row = cur.fetchone()
+
+            if not row:
+                results.append(BatchItemResult(
+                    ticket_id=tid, success=False, error="Ticket not found",
+                ))
+                failed += 1
+                continue
+
+            old_status = row["status"]
+            ticket_type = row["type"]
+
+            # Check if transition is valid
+            if not validate_transition(ticket_type, old_status, target_status, raise_on_invalid=False):
+                sm = STATE_MACHINES.get(ticket_type, {})
+                allowed = sm.get("transitions", {}).get(old_status, [])
+                results.append(BatchItemResult(
+                    ticket_id=tid, success=False,
+                    old_status=old_status,
+                    error=f"Cannot transition {ticket_type} from '{old_status}' to '{target_status}'. Allowed: {allowed}",
+                ))
+                failed += 1
+                continue
+
+            if confirm:
+                try:
+                    self.transition_ticket(conn, schema, tid, target_status, changed_by)
+                    results.append(BatchItemResult(
+                        ticket_id=tid, success=True,
+                        old_status=old_status, new_status=target_status,
+                    ))
+                    succeeded += 1
+                except Exception as e:
+                    results.append(BatchItemResult(
+                        ticket_id=tid, success=False,
+                        old_status=old_status, error=str(e),
+                    ))
+                    failed += 1
+            else:
+                # Dry-run: report what would happen
+                results.append(BatchItemResult(
+                    ticket_id=tid, success=True,
+                    old_status=old_status, new_status=target_status,
+                ))
+                succeeded += 1
+
+        return BatchOperationResult(
+            action="batch_move",
+            total=len(ticket_ids),
+            succeeded=succeeded,
+            failed=failed,
+            results=results,
+            dry_run=not confirm,
+        )
+
+    def batch_close(
+        self,
+        conn: DBConnection,
+        schema: str,
+        ticket_ids: List[int],
+        confirm: bool = False,
+        changed_by: Optional[str] = None,
+    ) -> BatchOperationResult:
+        """Close multiple tickets, auto-walking intermediate states.
+
+        For each ticket, finds a path to a terminal status via repeated
+        transition_ticket() calls. Two-phase: preview/confirm.
+
+        Args:
+            conn: Database connection.
+            schema: PostgreSQL schema name.
+            ticket_ids: List of ticket IDs to close.
+            confirm: If False (default), dry-run preview. If True, execute.
+            changed_by: Who closed the tickets.
+
+        Returns:
+            BatchOperationResult with per-ticket results.
+        """
+        if len(ticket_ids) > self.BATCH_MAX:
+            return BatchOperationResult(
+                action="batch_close",
+                total=len(ticket_ids),
+                succeeded=0,
+                failed=len(ticket_ids),
+                results=[BatchItemResult(
+                    ticket_id=0, success=False,
+                    error=f"Batch size {len(ticket_ids)} exceeds max {self.BATCH_MAX}",
+                )],
+                dry_run=not confirm,
+            )
+
+        results: List[BatchItemResult] = []
+        succeeded = 0
+        failed = 0
+
+        for tid in ticket_ids:
+            cur = conn.cursor()
+            cur.execute(
+                sql.SQL("SELECT type, status FROM {}.tickets WHERE id = %s").format(
+                    sql.Identifier(schema)
+                ),
+                (tid,),
+            )
+            row = cur.fetchone()
+
+            if not row:
+                results.append(BatchItemResult(
+                    ticket_id=tid, success=False, error="Ticket not found",
+                ))
+                failed += 1
+                continue
+
+            ticket_type = row["type"]
+            current_status = row["status"]
+            terminals = get_terminal_statuses(ticket_type)
+
+            # Already closed
+            if current_status in terminals:
+                results.append(BatchItemResult(
+                    ticket_id=tid, success=True,
+                    old_status=current_status, new_status=current_status,
+                ))
+                succeeded += 1
+                continue
+
+            # Find path to terminal via BFS-like walk
+            path = self._find_close_path(ticket_type, current_status)
+            if not path:
+                results.append(BatchItemResult(
+                    ticket_id=tid, success=False,
+                    old_status=current_status,
+                    error=f"No path to terminal from '{current_status}' for {ticket_type}",
+                ))
+                failed += 1
+                continue
+
+            final_status = path[-1]
+
+            if confirm:
+                try:
+                    for step_status in path:
+                        self.transition_ticket(conn, schema, tid, step_status, changed_by)
+                    results.append(BatchItemResult(
+                        ticket_id=tid, success=True,
+                        old_status=current_status, new_status=final_status,
+                    ))
+                    succeeded += 1
+                except Exception as e:
+                    results.append(BatchItemResult(
+                        ticket_id=tid, success=False,
+                        old_status=current_status, error=str(e),
+                    ))
+                    failed += 1
+            else:
+                results.append(BatchItemResult(
+                    ticket_id=tid, success=True,
+                    old_status=current_status, new_status=final_status,
+                ))
+                succeeded += 1
+
+        return BatchOperationResult(
+            action="batch_close",
+            total=len(ticket_ids),
+            succeeded=succeeded,
+            failed=failed,
+            results=results,
+            dry_run=not confirm,
+        )
+
+    @staticmethod
+    def _find_close_path(ticket_type: str, current_status: str) -> Optional[List[str]]:
+        """Find shortest path from current_status to any terminal status.
+
+        Uses BFS over the state machine transitions.
+
+        Args:
+            ticket_type: The ticket type.
+            current_status: Current status.
+
+        Returns:
+            List of statuses to transition through (not including current),
+            or None if no path exists.
+        """
+        sm = STATE_MACHINES.get(ticket_type)
+        if not sm:
+            return None
+
+        terminals = set(sm["terminal"])
+        transitions = sm["transitions"]
+
+        # BFS
+        from collections import deque
+        queue: deque = deque()
+        queue.append((current_status, []))
+        visited = {current_status}
+
+        while queue:
+            status, path = queue.popleft()
+            for next_status in transitions.get(status, []):
+                if next_status in visited:
+                    continue
+                new_path = path + [next_status]
+                if next_status in terminals:
+                    return new_path
+                visited.add(next_status)
+                queue.append((next_status, new_path))
+
+        return None
 
     # --- Link operations --- #
 
