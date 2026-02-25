@@ -11,6 +11,9 @@ from typing import Any, Callable, List, Optional
 from fastapi import APIRouter, Depends, HTTPException, Query, status
 
 from stompy_ticketing.models import (
+    BatchCloseRequest,
+    BatchMoveRequest,
+    BatchOperationResult,
     BoardView,
     LinkType,
     Priority,
@@ -166,6 +169,47 @@ async def archive_tickets(name: str):
     with _get_db_for_project(name) as conn:
         count = _service.archive_stale_tickets(conn, schema)
         return {"status": "archived", "count": count}
+
+
+# --------------------------------------------------------------------------- #
+# Batch Operations                                                             #
+# --------------------------------------------------------------------------- #
+
+
+@router.post("/batch/move", response_model=BatchOperationResult)
+async def batch_move(name: str, body: BatchMoveRequest):
+    """Move multiple tickets to a target status in one call.
+
+    Two-phase: default is preview (confirm=false), set confirm=true to execute.
+    Automatically validates state machine transitions per ticket.
+    Max 50 tickets per call.
+    """
+    _require_db()
+    schema = _get_schema(name)
+    with _get_db_for_project(name) as conn:
+        return _service.batch_transition(
+            conn, schema, body.ticket_ids, body.status,
+            confirm=body.confirm,
+            changed_by=body.note,
+        )
+
+
+@router.post("/batch/close", response_model=BatchOperationResult)
+async def batch_close(name: str, body: BatchCloseRequest):
+    """Close multiple tickets in one call.
+
+    Two-phase: default is preview (confirm=false), set confirm=true to execute.
+    Walks each ticket through intermediate state transitions to reach terminal status.
+    Max 50 tickets per call.
+    """
+    _require_db()
+    schema = _get_schema(name)
+    with _get_db_for_project(name) as conn:
+        return _service.batch_close(
+            conn, schema, body.ticket_ids,
+            confirm=body.confirm,
+            changed_by=body.note,
+        )
 
 
 @router.get("/{ticket_id}", response_model=TicketResponse)
