@@ -253,25 +253,52 @@ class TestBatchClose:
         assert result.results[0].new_status == "done"
 
     def test_confirm_mode_walks_intermediate_states(self):
-        """confirm=True should transition through intermediate states to reach terminal.
+        """confirm=True should transition through intermediate states to reach positive terminal.
 
-        Bug at triage: BFS finds shortest path triage -> wont_fix (depth 1),
-        since wont_fix is directly reachable. This is correct - BFS prefers shortest path.
+        Bug at triage: BFS now prefers positive terminal (resolved) over wont_fix (#163).
+        Path: triage -> confirmed -> in_progress -> resolved (3 steps).
         """
         conn, cur = _mock_conn_and_cursor()
         svc = TicketService()
 
-        # Bug at triage -> wont_fix (shortest path, depth 1)
+        # Bug at triage -> confirmed -> in_progress -> resolved (positive path)
         cur.fetchone.side_effect = [
             # batch_close SELECT
             {"type": "bug", "status": "triage"},
-            # transition_ticket for triage -> wont_fix
+            # transition triage -> confirmed
             _make_ticket_row(id=1, type="bug", status="triage"),
-            _make_ticket_row(id=1, type="bug", status="wont_fix", closed_at=FIXED_TIME),
+            _make_ticket_row(id=1, type="bug", status="confirmed"),
+            # transition confirmed -> in_progress
+            _make_ticket_row(id=1, type="bug", status="confirmed"),
+            _make_ticket_row(id=1, type="bug", status="in_progress"),
+            # transition in_progress -> resolved
+            _make_ticket_row(id=1, type="bug", status="in_progress"),
+            _make_ticket_row(id=1, type="bug", status="resolved", closed_at=FIXED_TIME),
         ]
         cur.fetchall.return_value = []  # history queries
 
         result = svc.batch_close(conn, SCHEMA, [1], confirm=True)
+
+        assert result.dry_run is False
+        assert result.succeeded == 1
+        assert result.results[0].new_status == "resolved"
+
+    def test_confirm_mode_with_negative_resolution(self):
+        """confirm=True with resolution=wont_fix should use the shortest path to wont_fix."""
+        conn, cur = _mock_conn_and_cursor()
+        svc = TicketService()
+
+        # Bug at triage -> wont_fix (direct, 1 step) via explicit resolution
+        cur.fetchone.side_effect = [
+            # batch_close SELECT
+            {"type": "bug", "status": "triage"},
+            # transition triage -> wont_fix
+            _make_ticket_row(id=1, type="bug", status="triage"),
+            _make_ticket_row(id=1, type="bug", status="wont_fix", closed_at=FIXED_TIME),
+        ]
+        cur.fetchall.return_value = []
+
+        result = svc.batch_close(conn, SCHEMA, [1], confirm=True, resolution="wont_fix")
 
         assert result.dry_run is False
         assert result.succeeded == 1
@@ -335,39 +362,49 @@ class TestFindClosePath:
     """Tests for TicketService._find_close_path() BFS logic."""
 
     def test_task_backlog_to_done(self):
-        """task: backlog -> done (direct)."""
+        """task: backlog -> done (preferred positive terminal)."""
         path = TicketService._find_close_path("task", "backlog")
         assert path is not None
-        assert path[-1] in ("done", "cancelled")
+        assert path[-1] == "done"  # positive terminal preferred (#163)
 
     def test_task_in_progress_to_done(self):
-        """task: in_progress -> done (direct)."""
+        """task: in_progress -> done (preferred positive terminal)."""
         path = TicketService._find_close_path("task", "in_progress")
-        assert path == ["done"] or path == ["cancelled"]
+        assert path == ["done"]  # positive terminal preferred (#163)
 
     def test_bug_triage_to_resolved(self):
-        """bug: triage -> confirmed -> in_progress -> resolved."""
+        """bug: triage -> confirmed -> in_progress -> resolved (positive)."""
         path = TicketService._find_close_path("bug", "triage")
         assert path is not None
-        assert path[-1] in ("resolved", "wont_fix")
+        assert path[-1] == "resolved"  # positive terminal preferred (#163)
+
+    def test_bug_triage_to_wont_fix_explicit(self):
+        """bug: triage -> wont_fix (explicit negative target)."""
+        path = TicketService._find_close_path("bug", "triage", "wont_fix")
+        assert path == ["wont_fix"]
 
     def test_bug_in_progress_to_resolved(self):
-        """bug: in_progress -> resolved (direct)."""
+        """bug: in_progress -> resolved (positive terminal preferred)."""
         path = TicketService._find_close_path("bug", "in_progress")
         assert path is not None
-        assert path[-1] in ("resolved", "wont_fix")
+        assert path[-1] == "resolved"  # positive terminal preferred (#163)
 
     def test_feature_proposed_to_shipped(self):
-        """feature: proposed -> approved -> in_progress -> shipped."""
+        """feature: proposed -> approved -> in_progress -> shipped (positive)."""
         path = TicketService._find_close_path("feature", "proposed")
         assert path is not None
-        assert path[-1] in ("shipped", "rejected")
+        assert path[-1] == "shipped"  # positive terminal preferred (#163)
+
+    def test_feature_proposed_to_rejected_explicit(self):
+        """feature: proposed -> rejected (explicit negative target)."""
+        path = TicketService._find_close_path("feature", "proposed", "rejected")
+        assert path == ["rejected"]
 
     def test_decision_open_to_decided(self):
-        """decision: open -> decided (direct)."""
+        """decision: open -> decided (positive terminal preferred)."""
         path = TicketService._find_close_path("decision", "open")
         assert path is not None
-        assert path[-1] in ("decided", "deferred")
+        assert path[-1] == "decided"  # positive terminal preferred (#163)
 
     def test_already_terminal_returns_none(self):
         """Terminal status has no onward path."""

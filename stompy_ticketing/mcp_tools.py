@@ -77,6 +77,7 @@ def register_ticketing_tools(
         ticket_id: Optional[int] = None,
         ticket_ids: Optional[str] = None,
         confirm: bool = False,
+        resolution: Optional[str] = None,
         limit: Optional[int] = None,
         offset: Optional[int] = None,
         include_archived: bool = False,
@@ -114,6 +115,8 @@ def register_ticketing_tools(
             ticket_id: Ticket ID (get/update/move/close)
             ticket_ids: Comma-separated ticket IDs (batch_move/batch_close)
             confirm: Execute batch operation (default: false = preview only)
+            resolution: Terminal status for close/batch_close (e.g. "resolved", "wont_fix").
+                Defaults to positive outcome (resolved/done/shipped/decided).
             limit: Max tickets to return for list (default: 20, max: 200)
             offset: Number of tickets to skip for list (default: 0)
             include_archived: Include archived tickets in list results (default: false)
@@ -240,7 +243,9 @@ def register_ticketing_tools(
                 elif action == "close":
                     if not ticket_id:
                         return json.dumps({"error": "ticket_id is required for close"})
-                    result = service.close_ticket(conn, schema, ticket_id)
+                    result = service.close_ticket(
+                        conn, schema, ticket_id, resolution=resolution,
+                    )
                     if not result:
                         return json.dumps({"error": f"Ticket {ticket_id} not found"})
                     return _safe_json({"status": "closed", "ticket": result.model_dump()})
@@ -272,6 +277,7 @@ def register_ticketing_tools(
                     result = service.batch_close(
                         conn, schema, parsed_ids,
                         confirm=confirm,
+                        resolution=resolution,
                     )
                     return _safe_json(result)
 
