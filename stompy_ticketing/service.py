@@ -90,6 +90,15 @@ STATE_MACHINES: Dict[str, Dict[str, Any]] = {
 }
 
 
+# Preferred (positive) terminal status per type — used by close_ticket/batch_close (#163)
+POSITIVE_TERMINALS: Dict[str, str] = {
+    "task": "done",
+    "bug": "resolved",
+    "feature": "shipped",
+    "decision": "decided",
+}
+
+
 def get_initial_status(ticket_type: str) -> str:
     """Get the initial status for a ticket type."""
     if ticket_type not in STATE_MACHINES:
@@ -483,14 +492,20 @@ class TicketService:
         schema: str,
         ticket_id: int,
         changed_by: Optional[str] = None,
+        resolution: Optional[str] = None,
     ) -> Optional[TicketResponse]:
-        """Close a ticket by moving it to its first terminal status.
+        """Close a ticket by walking it to a terminal status.
+
+        Prefers the positive terminal (resolved, done, shipped, decided)
+        unless a specific resolution is given.
 
         Args:
             conn: Database connection.
             schema: PostgreSQL schema name.
             ticket_id: Ticket ID.
             changed_by: Who closed it.
+            resolution: Specific terminal status to target (e.g. "wont_fix").
+                If None, uses the positive default for the ticket type.
 
         Returns:
             Updated ticket or None if not found.
@@ -514,19 +529,29 @@ class TicketService:
         if current_status in terminals:
             return self.get_ticket(conn, schema, ticket_id, include_history=False, include_links=False)
 
-        # Find the first reachable terminal status
-        sm = STATE_MACHINES[ticket_type]
-        allowed = sm["transitions"].get(current_status, [])
-        for target in allowed:
-            if target in terminals:
-                return self.transition_ticket(conn, schema, ticket_id, target, changed_by)
+        # Validate resolution if provided
+        if resolution and resolution not in terminals:
+            raise InvalidTransitionError(
+                f"'{resolution}' is not a terminal status for {ticket_type}. "
+                f"Valid terminals: {terminals}"
+            )
 
-        # Not directly reachable - try the default terminal
-        raise InvalidTransitionError(
-            f"Cannot close {ticket_type} from '{current_status}'. "
-            f"No terminal status is directly reachable. "
-            f"Allowed transitions: {allowed}"
-        )
+        # Find path to terminal (prefers positive terminal by default)
+        path = self._find_close_path(ticket_type, current_status, resolution)
+        if not path:
+            sm = STATE_MACHINES[ticket_type]
+            allowed = sm["transitions"].get(current_status, [])
+            raise InvalidTransitionError(
+                f"Cannot close {ticket_type} from '{current_status}'. "
+                f"No path to terminal status. "
+                f"Allowed transitions: {allowed}"
+            )
+
+        # Walk the path
+        result = None
+        for step_status in path:
+            result = self.transition_ticket(conn, schema, ticket_id, step_status, changed_by)
+        return result
 
     def archive_stale_tickets(
         self,
@@ -1190,11 +1215,15 @@ class TicketService:
         ticket_ids: List[int],
         confirm: bool = False,
         changed_by: Optional[str] = None,
+        resolution: Optional[str] = None,
     ) -> BatchOperationResult:
         """Close multiple tickets, auto-walking intermediate states.
 
         For each ticket, finds a path to a terminal status via repeated
         transition_ticket() calls. Two-phase: preview/confirm.
+
+        Prefers positive terminal (resolved, done, shipped) by default.
+        Pass resolution to override (e.g. "wont_fix", "cancelled").
 
         Args:
             conn: Database connection.
@@ -1202,6 +1231,8 @@ class TicketService:
             ticket_ids: List of ticket IDs to close.
             confirm: If False (default), dry-run preview. If True, execute.
             changed_by: Who closed the tickets.
+            resolution: Specific terminal status to target. If None, uses
+                the positive default for each ticket's type.
 
         Returns:
             BatchOperationResult with per-ticket results.
@@ -1253,8 +1284,19 @@ class TicketService:
                 succeeded += 1
                 continue
 
+            # Validate resolution for this ticket type if provided
+            if resolution and resolution not in terminals:
+                results.append(BatchItemResult(
+                    ticket_id=tid, success=False,
+                    old_status=current_status,
+                    error=f"'{resolution}' is not a terminal status for {ticket_type}. "
+                          f"Valid: {terminals}",
+                ))
+                failed += 1
+                continue
+
             # Find path to terminal via BFS-like walk
-            path = self._find_close_path(ticket_type, current_status)
+            path = self._find_close_path(ticket_type, current_status, resolution)
             if not path:
                 results.append(BatchItemResult(
                     ticket_id=tid, success=False,
@@ -1298,14 +1340,21 @@ class TicketService:
         )
 
     @staticmethod
-    def _find_close_path(ticket_type: str, current_status: str) -> Optional[List[str]]:
-        """Find shortest path from current_status to any terminal status.
+    def _find_close_path(
+        ticket_type: str,
+        current_status: str,
+        target_terminal: Optional[str] = None,
+    ) -> Optional[List[str]]:
+        """Find shortest path from current_status to a terminal status.
 
-        Uses BFS over the state machine transitions.
+        Uses BFS over the state machine transitions. When no target is
+        specified, prefers the positive terminal (e.g. resolved > wont_fix).
 
         Args:
             ticket_type: The ticket type.
             current_status: Current status.
+            target_terminal: Specific terminal to reach. If None, uses the
+                positive default from POSITIVE_TERMINALS.
 
         Returns:
             List of statuses to transition through (not including current),
@@ -1318,24 +1367,36 @@ class TicketService:
         terminals = set(sm["terminal"])
         transitions = sm["transitions"]
 
-        # BFS
+        # Determine which terminal to target
+        preferred = target_terminal or POSITIVE_TERMINALS.get(ticket_type)
+
+        # Strategy: find path to preferred terminal first; fall back to any
         from collections import deque
-        queue: deque = deque()
-        queue.append((current_status, []))
-        visited = {current_status}
 
-        while queue:
-            status, path = queue.popleft()
-            for next_status in transitions.get(status, []):
-                if next_status in visited:
-                    continue
-                new_path = path + [next_status]
-                if next_status in terminals:
-                    return new_path
-                visited.add(next_status)
-                queue.append((next_status, new_path))
+        def _bfs_to(target_set: set) -> Optional[list]:
+            queue: deque = deque()
+            queue.append((current_status, []))
+            visited = {current_status}
+            while queue:
+                status, path = queue.popleft()
+                for next_status in transitions.get(status, []):
+                    if next_status in visited:
+                        continue
+                    new_path = path + [next_status]
+                    if next_status in target_set:
+                        return new_path
+                    visited.add(next_status)
+                    queue.append((next_status, new_path))
+            return None
 
-        return None
+        # Try preferred terminal first
+        if preferred and preferred in terminals:
+            path = _bfs_to({preferred})
+            if path:
+                return path
+
+        # Fall back to shortest path to any terminal
+        return _bfs_to(terminals)
 
     # --- Link operations --- #
 
