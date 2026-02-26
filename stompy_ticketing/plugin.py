@@ -23,6 +23,7 @@ def register_plugin(
     get_project_func: Callable,
     resolve_schema_func: Optional[Callable] = None,
     notify_resolution_func: Optional[Callable] = None,
+    cache_invalidator_func: Optional[Callable] = None,
 ) -> Dict[str, Any]:
     """One-call plugin registration.
 
@@ -40,6 +41,8 @@ def register_plugin(
         resolve_schema_func: Optional function to resolve project name to schema.
         notify_resolution_func: Optional callback(report, new_status) for bug
             resolution emails on mcp_global tickets.
+        cache_invalidator_func: Optional function(project) called after ticket
+            writes to invalidate REST response caches. Falls back to no-op.
 
     Returns:
         Dict with:
@@ -61,6 +64,7 @@ def register_plugin(
     configure_routes(
         get_db_func=get_db_func,
         resolve_schema_func=resolve_schema_func,
+        cache_invalidator_func=cache_invalidator_func,
     )
     api_router.include_router(router)
     logger.info("stompy_ticketing: REST API routes mounted")

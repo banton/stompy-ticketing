@@ -18,6 +18,7 @@ from stompy_ticketing.models import (
     BatchOperationResult,
     BoardColumn,
     BoardView,
+    CompactTicket,
     Priority,
     SearchResult,
     TicketCreate,
@@ -822,7 +823,10 @@ class TicketService:
 
     # Maximum description length in board view responses (chars).
     # Full descriptions are only returned via individual ticket reads.
-    BOARD_DESC_MAX_LENGTH = 200
+    BOARD_DESC_MAX_LENGTH = 100
+
+    # Default limit per column in kanban/compact views.
+    BOARD_DEFAULT_LIMIT = 10
 
     def board_view(
         self,
@@ -833,6 +837,7 @@ class TicketService:
         status_filter: Optional[str] = None,
         include_terminal: bool = False,
         include_archived: bool = False,
+        limit: Optional[int] = None,
     ) -> BoardView:
         """Get a kanban board view of tickets grouped by status.
 
@@ -840,11 +845,14 @@ class TicketService:
             conn: Database connection.
             schema: PostgreSQL schema name.
             type_filter: Filter by ticket type.
-            view: "kanban" (full tickets), "summary" (counts only),
-                  or "detail" (like kanban but with truncated descriptions).
+            view: "kanban" (tickets with truncated descriptions),
+                  "summary" (counts only), "compact" (id/title/priority only),
+                  or "detail" (alias for kanban).
             status_filter: Filter by status (e.g., "triage", "backlog").
             include_terminal: Include terminal statuses (default False).
             include_archived: Include archived tickets (default False).
+            limit: Max tickets per column (default 10 for kanban/compact).
+                   Use 0 for unlimited.
 
         Returns:
             Board view with columns.
@@ -911,10 +919,24 @@ class TicketService:
             ]
             total = sum(r["count"] for r in rows)
         else:
-            # Kanban / detail - get tickets grouped by status
+            # Kanban / compact / detail — get tickets grouped by status
+            is_compact = view == "compact"
+
+            # Determine effective limit per column
+            if limit is not None:
+                effective_limit = None if limit == 0 else max(1, limit)
+            else:
+                effective_limit = self.BOARD_DEFAULT_LIMIT
+
+            # For compact view, only fetch needed columns
+            if is_compact:
+                select_cols = "id, title, type, status, priority, assignee"
+            else:
+                select_cols = "*"
+
             cur.execute(
                 sql.SQL("""
-                SELECT * FROM {}.tickets {}
+                SELECT {} FROM {}.tickets {}
                 ORDER BY
                     CASE priority
                         WHEN 'urgent' THEN 0
@@ -924,21 +946,22 @@ class TicketService:
                         ELSE 4
                     END,
                     updated_at DESC
-                """).format(sql.Identifier(schema), sql.SQL(where_sql)),
+                """).format(
+                    sql.SQL(select_cols),
+                    sql.Identifier(schema),
+                    sql.SQL(where_sql),
+                ),
                 params,
             )
             rows = cur.fetchall()
 
-            # Group by status, truncating descriptions to keep response lean
+            # Group by status
             status_groups: Dict[str, List] = {}
             for r in rows:
                 status = r["status"]
                 if status not in status_groups:
                     status_groups[status] = []
-                ticket = self._row_to_response(r)
-                if ticket.description and len(ticket.description) > self.BOARD_DESC_MAX_LENGTH:
-                    ticket.description = ticket.description[: self.BOARD_DESC_MAX_LENGTH] + "..."
-                status_groups[status].append(ticket)
+                status_groups[status].append(r)
 
             # Build ordered columns based on type's state machine
             if type_filter and type_filter in STATE_MACHINES:
@@ -948,17 +971,97 @@ class TicketService:
 
             columns = []
             for status in ordered_statuses:
-                tickets = status_groups.get(status, [])
-                columns.append(
-                    BoardColumn(status=status, count=len(tickets), tickets=tickets)
-                )
+                group_rows = status_groups.get(status, [])
+                total_in_col = len(group_rows)
+                # Apply per-column limit
+                if effective_limit is not None:
+                    visible_rows = group_rows[:effective_limit]
+                else:
+                    visible_rows = group_rows
+                has_more = total_in_col > len(visible_rows)
+
+                if is_compact:
+                    compact_tickets = [
+                        CompactTicket(
+                            id=r["id"],
+                            title=r["title"],
+                            type=r["type"],
+                            status=r["status"],
+                            priority=r["priority"],
+                            assignee=r.get("assignee"),
+                        )
+                        for r in visible_rows
+                    ]
+                    columns.append(
+                        BoardColumn(
+                            status=status,
+                            count=total_in_col,
+                            compact_tickets=compact_tickets,
+                            has_more=has_more,
+                        )
+                    )
+                else:
+                    tickets = []
+                    for r in visible_rows:
+                        ticket = self._row_to_response(r)
+                        if ticket.description and len(ticket.description) > self.BOARD_DESC_MAX_LENGTH:
+                            ticket.description = ticket.description[: self.BOARD_DESC_MAX_LENGTH] + "..."
+                        tickets.append(ticket)
+                    columns.append(
+                        BoardColumn(
+                            status=status,
+                            count=total_in_col,
+                            tickets=tickets,
+                            has_more=has_more,
+                        )
+                    )
+
             # Add any statuses not in the ordered list
             for status in status_groups:
                 if status not in ordered_statuses:
-                    tickets = status_groups[status]
-                    columns.append(
-                        BoardColumn(status=status, count=len(tickets), tickets=tickets)
-                    )
+                    group_rows = status_groups[status]
+                    total_in_col = len(group_rows)
+                    if effective_limit is not None:
+                        visible_rows = group_rows[:effective_limit]
+                    else:
+                        visible_rows = group_rows
+                    has_more = total_in_col > len(visible_rows)
+
+                    if is_compact:
+                        compact_tickets = [
+                            CompactTicket(
+                                id=r["id"],
+                                title=r["title"],
+                                type=r["type"],
+                                status=r["status"],
+                                priority=r["priority"],
+                                assignee=r.get("assignee"),
+                            )
+                            for r in visible_rows
+                        ]
+                        columns.append(
+                            BoardColumn(
+                                status=status,
+                                count=total_in_col,
+                                compact_tickets=compact_tickets,
+                                has_more=has_more,
+                            )
+                        )
+                    else:
+                        tickets = []
+                        for r in visible_rows:
+                            ticket = self._row_to_response(r)
+                            if ticket.description and len(ticket.description) > self.BOARD_DESC_MAX_LENGTH:
+                                ticket.description = ticket.description[: self.BOARD_DESC_MAX_LENGTH] + "..."
+                            tickets.append(ticket)
+                        columns.append(
+                            BoardColumn(
+                                status=status,
+                                count=total_in_col,
+                                tickets=tickets,
+                                has_more=has_more,
+                            )
+                        )
 
             total = len(rows)
 
@@ -968,6 +1071,8 @@ class TicketService:
             type_filter=type_filter,
             include_archived=include_archived,
             archived_count=archived_count,
+            view=view,
+            limit_per_column=effective_limit if view != "summary" else None,
         )
 
     # --- Batch operations --- #

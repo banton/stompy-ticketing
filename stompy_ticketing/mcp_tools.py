@@ -380,6 +380,7 @@ def register_ticketing_tools(
         status: Optional[str] = None,
         include_terminal: bool = False,
         include_archived: bool = False,
+        limit: Optional[int] = None,
         project: Optional[str] = None,
     ) -> str:
         """Get a dashboard view of tickets grouped by status.
@@ -390,25 +391,24 @@ def register_ticketing_tools(
         shipped, etc.) and archived tickets are excluded. Use include_terminal=true
         or include_archived=true to see them.
 
-        Descriptions are truncated to 200 chars in board views. Use
-        ticket(action="get", id=N) to read full descriptions.
-
         Args:
-            view: "summary" (counts only), "kanban" (tickets with truncated descriptions),
-                  or "detail" (alias for kanban — same truncated output)
+            view: kanban (full tickets per column) or summary (counts only)
+                or compact (id+title+priority only — best for large projects)
             type: Filter by ticket type (task|bug|feature|decision)
-            status: Filter by specific status (e.g., "triage", "backlog", "in_progress")
-            include_terminal: Include terminal statuses like done/resolved/shipped (default: false)
+            status: Filter by specific status (e.g., "triage", "backlog")
+            include_terminal: Include terminal statuses (default: false)
             include_archived: Include archived tickets (default: false)
+            limit: Max tickets per column (default 10). Use 0 for all.
             project: Project name (default: active project)
 
         Returns: JSON board view with columns grouped by status
 
         Examples:
+            ticket_board()
             ticket_board(view="summary")
-            ticket_board(status="triage")
+            ticket_board(view="compact")
             ticket_board(view="summary", type="task")
-            ticket_board(view="summary", include_terminal=true)
+            ticket_board(view="kanban", limit=5)
         """
         project_check = check_project_func(project)
         if project_check:
@@ -425,6 +425,7 @@ def register_ticketing_tools(
                     status_filter=status,
                     include_terminal=include_terminal,
                     include_archived=include_archived,
+                    limit=limit,
                 )
                 return _safe_json(result)
 

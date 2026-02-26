@@ -8,6 +8,7 @@ from stompy_ticketing.models import (
     TicketLinkCreate,
     TicketLinkResponse,
     BoardView,
+    CompactTicket,
     SearchResult,
 )
 from stompy_ticketing.service import TicketService
@@ -17,7 +18,7 @@ from stompy_ticketing.schema import (
     get_ticket_links_table_sql,
 )
 
-__version__ = "0.3.0"
+__version__ = "0.5.0"
 
 __all__ = [
     "TicketService",

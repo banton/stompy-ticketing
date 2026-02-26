@@ -171,3 +171,8 @@ Examples:
 - `test(mcp): add unit tests for ticket tool`
 - `feat(service): add changed_by to transition history`
 - `fix(api): handle missing ticket in GET endpoint`
+
+## Skills
+- `/test-and-ticket` — run pytest, auto-create Stompy tickets for failures
+- `/tdd-cycle` — guided RED-GREEN-REFACTOR workflow
+- `/sprint-plan` — create sprint of ticketing tickets

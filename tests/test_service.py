@@ -705,10 +705,10 @@ class TestBoardView:
         conn, cur = _mock_conn_and_cursor(rows=rows)
         cur.fetchall.return_value = rows
 
-        result = self.service.board_view(conn, SCHEMA, view="kanban")
+        result = self.service.board_view(conn, SCHEMA, view="kanban", limit=0)
 
         ticket = result.columns[0].tickets[0]
-        assert len(ticket.description) == 203  # 200 chars + "..."
+        assert len(ticket.description) == 103  # 100 chars + "..."
         assert ticket.description.endswith("...")
 
     def test_kanban_view_preserves_short_descriptions(self):
@@ -762,12 +762,12 @@ class TestBoardView:
         conn, cur = _mock_conn_and_cursor(rows=rows)
         cur.fetchall.return_value = rows
 
-        result = self.service.board_view(conn, SCHEMA, view="detail")
+        result = self.service.board_view(conn, SCHEMA, view="detail", limit=0)
 
         # detail is not "summary", so it uses kanban path with truncation
         assert result.total == 1
         ticket = result.columns[0].tickets[0]
-        assert len(ticket.description) == 203
+        assert len(ticket.description) == 103
 
 
 # --------------------------------------------------------------------------- #

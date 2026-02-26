@@ -145,10 +145,23 @@ class TicketListResponse(BaseModel):
     by_type: Optional[Dict[str, int]] = None
 
 
+class CompactTicket(BaseModel):
+    """Minimal ticket representation for compact board views."""
+
+    id: int
+    title: str
+    type: str
+    status: str
+    priority: str
+    assignee: Optional[str] = None
+
+
 class BoardColumn(BaseModel):
     status: str
     count: int
-    tickets: List[TicketResponse]
+    tickets: List[TicketResponse] = Field(default_factory=list)
+    compact_tickets: List[CompactTicket] = Field(default_factory=list)
+    has_more: bool = False
 
 
 class BoardView(BaseModel):
@@ -157,6 +170,8 @@ class BoardView(BaseModel):
     type_filter: Optional[str] = None
     include_archived: bool = False
     archived_count: int = 0
+    view: str = "kanban"
+    limit_per_column: Optional[int] = None
 
 
 class SearchResult(BaseModel):

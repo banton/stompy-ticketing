@@ -39,21 +39,35 @@ _service = TicketService()
 # get_db_func(project) returns a context manager that yields a DB connection.
 _get_db_for_project: Optional[Callable] = None
 _resolve_schema: Optional[Callable] = None
+_on_ticket_write: Optional[Callable] = None
 
 
 def configure_routes(
     get_db_func: Callable,
     resolve_schema_func: Optional[Callable] = None,
+    cache_invalidator_func: Optional[Callable] = None,
 ) -> None:
     """Configure the router with database access functions.
 
     Args:
         get_db_func: Function(project) -> context-manager DB connection.
         resolve_schema_func: Function(name) -> schema name. If None, uses name directly.
+        cache_invalidator_func: Optional function(project) called after ticket
+            writes to invalidate REST response caches. No-op if None.
     """
-    global _get_db_for_project, _resolve_schema
+    global _get_db_for_project, _resolve_schema, _on_ticket_write
     _get_db_for_project = get_db_func
     _resolve_schema = resolve_schema_func
+    _on_ticket_write = cache_invalidator_func
+
+
+def _invalidate_ticket_cache(project: str) -> None:
+    """Fire-and-forget ticket cache invalidation."""
+    if _on_ticket_write is not None:
+        try:
+            _on_ticket_write(project)
+        except Exception:
+            pass  # Cache invalidation is best-effort
 
 
 def _get_schema(name: str) -> str:
@@ -82,7 +96,9 @@ async def create_ticket(name: str, body: TicketCreate):
     schema = _get_schema(name)
     try:
         with _get_db_for_project(name) as conn:
-            return _service.create_ticket(conn, schema, body)
+            result = _service.create_ticket(conn, schema, body)
+        _invalidate_ticket_cache(name)
+        return result
     except Exception as e:
         raise HTTPException(status_code=400, detail=str(e))
 
@@ -168,7 +184,9 @@ async def archive_tickets(name: str):
     schema = _get_schema(name)
     with _get_db_for_project(name) as conn:
         count = _service.archive_stale_tickets(conn, schema)
-        return {"status": "archived", "count": count}
+    if count > 0:
+        _invalidate_ticket_cache(name)
+    return {"status": "archived", "count": count}
 
 
 # --------------------------------------------------------------------------- #
@@ -187,11 +205,14 @@ async def batch_move(name: str, body: BatchMoveRequest):
     _require_db()
     schema = _get_schema(name)
     with _get_db_for_project(name) as conn:
-        return _service.batch_transition(
+        result = _service.batch_transition(
             conn, schema, body.ticket_ids, body.status,
             confirm=body.confirm,
             changed_by=body.note,
         )
+    if body.confirm:
+        _invalidate_ticket_cache(name)
+    return result
 
 
 @router.post("/batch/close", response_model=BatchOperationResult)
@@ -205,11 +226,14 @@ async def batch_close(name: str, body: BatchCloseRequest):
     _require_db()
     schema = _get_schema(name)
     with _get_db_for_project(name) as conn:
-        return _service.batch_close(
+        result = _service.batch_close(
             conn, schema, body.ticket_ids,
             confirm=body.confirm,
             changed_by=body.note,
         )
+    if body.confirm:
+        _invalidate_ticket_cache(name)
+    return result
 
 
 @router.get("/{ticket_id}", response_model=TicketResponse)
@@ -233,7 +257,8 @@ async def update_ticket(name: str, ticket_id: int, body: TicketUpdate):
         result = _service.update_ticket(conn, schema, ticket_id, body)
         if not result:
             raise HTTPException(status_code=404, detail=f"Ticket {ticket_id} not found")
-        return result
+    _invalidate_ticket_cache(name)
+    return result
 
 
 @router.post("/{ticket_id}/move", response_model=TicketResponse)
@@ -248,9 +273,10 @@ async def transition_ticket(name: str, ticket_id: int, body: TicketTransition):
                 raise HTTPException(
                     status_code=404, detail=f"Ticket {ticket_id} not found"
                 )
-            return result
         except InvalidTransitionError as e:
             raise HTTPException(status_code=422, detail=str(e))
+    _invalidate_ticket_cache(name)
+    return result
 
 
 # --------------------------------------------------------------------------- #
