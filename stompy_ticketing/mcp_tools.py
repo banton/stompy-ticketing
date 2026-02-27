@@ -12,7 +12,7 @@ Stompy internals.
 """
 
 import json
-from typing import Any, Callable, List, Optional
+from typing import Annotated, Any, Callable, List, Literal, Optional
 
 from stompy_ticketing.models import (
     LinkType,
@@ -66,74 +66,44 @@ def register_ticketing_tools(
 
     @mcp_instance.tool()
     async def ticket(
-        action: str,
-        title: Optional[str] = None,
-        description: Optional[str] = None,
-        type: Optional[str] = None,
-        priority: Optional[str] = None,
-        status: Optional[str] = None,
-        assignee: Optional[str] = None,
-        tags: Optional[str] = None,
-        ticket_id: Optional[int] = None,
-        ticket_ids: Optional[str] = None,
-        confirm: bool = False,
-        resolution: Optional[str] = None,
-        limit: Optional[int] = None,
-        offset: Optional[int] = None,
-        include_archived: bool = False,
-        project: Optional[str] = None,
+        action: Annotated[
+            Literal["create", "get", "update", "move", "list", "close", "archive", "batch_move", "batch_close"],
+            "Operation to perform",
+        ],
+        title: Annotated[Optional[str], "Ticket title (create/update)"] = None,
+        description: Annotated[Optional[str], "Ticket description (create/update)"] = None,
+        type: Annotated[
+            Optional[Literal["task", "bug", "feature", "decision"]],
+            "Ticket type (default: task)",
+        ] = None,
+        priority: Annotated[
+            Optional[Literal["urgent", "high", "medium", "low", "none"]],
+            "Ticket priority (default: medium)",
+        ] = None,
+        status: Annotated[Optional[str], "Target status for move/batch_move, or filter for list"] = None,
+        assignee: Annotated[Optional[str], "Assignee name"] = None,
+        tags: Annotated[Optional[str], "Comma-separated tags"] = None,
+        ticket_id: Annotated[Optional[int], "Ticket ID (get/update/move/close)"] = None,
+        ticket_ids: Annotated[Optional[str], "Comma-separated IDs (batch_move/batch_close)"] = None,
+        confirm: Annotated[bool, "Execute batch operation (default: preview only)"] = False,
+        resolution: Annotated[Optional[str], "Terminal status for close (e.g. 'resolved', 'wont_fix')"] = None,
+        limit: Annotated[Optional[int], "Max tickets for list (default 20, max 200)"] = None,
+        offset: Annotated[Optional[int], "Skip N tickets for list pagination"] = None,
+        include_archived: Annotated[bool, "Include archived tickets in list"] = False,
+        project: Annotated[Optional[str], "Project name"] = None,
     ) -> str:
-        """Create, read, update, move, list, archive, close, or batch-operate tickets.
+        """CRUD + lifecycle for tickets. Pass project= on every call.
 
-        **REQUIRES ACTIVE PROJECT** - Use project_switch() first or pass project param.
-
-        Actions:
-          create      - Create ticket (title required, type defaults to 'task')
-          get         - Get ticket by ID (ticket_id required)
-          update      - Update ticket fields (ticket_id required)
-          move        - Transition status (ticket_id + status required)
-          list        - List tickets (optional type/status/priority/assignee/limit/offset filters)
-          close       - Close ticket (ticket_id required)
-          archive     - Manually trigger archival of stale closed tickets
-          batch_move  - Move multiple tickets to status (ticket_ids + status required)
-          batch_close - Close multiple tickets (ticket_ids required)
-
-        Batch operations use two-phase confirmation:
-          1. Default (confirm=false): Preview what would happen
-          2. confirm=true: Execute the batch operation
-          Max 50 tickets per batch.
-
-        Args:
-            action: create|get|update|move|list|close|archive|batch_move|batch_close
-            title: Ticket title (create/update)
-            description: Ticket description (create/update)
-            type: task|bug|feature|decision (create filter, default: task)
-            priority: urgent|high|medium|low|none (create/update/filter)
-            status: Target status for move/batch_move, or filter for list
-            assignee: Assignee name (create/update/filter)
-            tags: Comma-separated tags (create/update)
-            ticket_id: Ticket ID (get/update/move/close)
-            ticket_ids: Comma-separated ticket IDs (batch_move/batch_close)
-            confirm: Execute batch operation (default: false = preview only)
-            resolution: Terminal status for close/batch_close (e.g. "resolved", "wont_fix").
-                Defaults to positive outcome (resolved/done/shipped/decided).
-            limit: Max tickets to return for list (default: 20, max: 200)
-            offset: Number of tickets to skip for list (default: 0)
-            include_archived: Include archived tickets in list results (default: false)
-            project: Project name (default: active project)
-
-        Returns: JSON with ticket data or list results (includes pagination: total, limit, offset, has_more)
-
-        Examples:
-            ticket(action="create", title="Fix login bug", type="bug", priority="high")
-            ticket(action="list", type="task", status="in_progress")
-            ticket(action="move", ticket_id=1, status="in_progress")
-            ticket(action="close", ticket_id=1)
-            ticket(action="batch_move", ticket_ids="1,2,3", status="in_progress")
-            ticket(action="batch_move", ticket_ids="1,2,3", status="in_progress", confirm=true)
-            ticket(action="batch_close", ticket_ids="4,5,6")
-            ticket(action="batch_close", ticket_ids="4,5,6", confirm=true)
-        """
+        action → required params:
+          create      → title (type defaults to task)
+          get         → ticket_id
+          update      → ticket_id + fields to change
+          move        → ticket_id + status
+          list        → optional filters (type/status/priority/assignee)
+          close       → ticket_id
+          archive     → (none)
+          batch_move  → ticket_ids + status; confirm=True to execute
+          batch_close → ticket_ids; confirm=True to execute"""
         project_check = check_project_func(project)
         if project_check:
             return project_check
@@ -303,37 +273,25 @@ def register_ticketing_tools(
 
     @mcp_instance.tool()
     async def ticket_link(
-        action: str,
-        ticket_id: Optional[int] = None,
-        target_id: Optional[int] = None,
-        link_type: Optional[str] = None,
-        link_id: Optional[int] = None,
-        project: Optional[str] = None,
+        action: Annotated[
+            Literal["add", "remove", "list"],
+            "Operation to perform",
+        ],
+        ticket_id: Annotated[Optional[int], "Source ticket ID (add/list)"] = None,
+        target_id: Annotated[Optional[int], "Target ticket ID (add)"] = None,
+        link_type: Annotated[
+            Optional[Literal["blocks", "parent", "related", "duplicate"]],
+            "Relationship type (default: related)",
+        ] = None,
+        link_id: Annotated[Optional[int], "Link ID to remove (remove)"] = None,
+        project: Annotated[Optional[str], "Project name"] = None,
     ) -> str:
-        """Manage relationships between tickets.
+        """Manage relationships between tickets. Pass project= on every call.
 
-        **REQUIRES ACTIVE PROJECT** - Use project_switch() first or pass project param.
-
-        Actions:
-          add    - Link two tickets (ticket_id, target_id, link_type required)
-          remove - Remove a link (link_id required)
-          list   - List links for a ticket (ticket_id required)
-
-        Args:
-            action: add|remove|list
-            ticket_id: Source ticket ID (add/list)
-            target_id: Target ticket ID (add)
-            link_type: blocks|parent|related|duplicate (add, default: related)
-            link_id: Link ID to remove (remove)
-            project: Project name (default: active project)
-
-        Returns: JSON with link data
-
-        Examples:
-            ticket_link(action="add", ticket_id=1, target_id=2, link_type="blocks")
-            ticket_link(action="list", ticket_id=1)
-            ticket_link(action="remove", link_id=5)
-        """
+        action → required params:
+          add    → ticket_id + target_id (+ optional link_type)
+          remove → link_id
+          list   → ticket_id"""
         project_check = check_project_func(project)
         if project_check:
             return project_check
@@ -381,41 +339,21 @@ def register_ticketing_tools(
 
     @mcp_instance.tool()
     async def ticket_board(
-        view: str = "kanban",
-        type: Optional[str] = None,
-        status: Optional[str] = None,
-        include_terminal: bool = False,
-        include_archived: bool = False,
-        limit: Optional[int] = None,
-        project: Optional[str] = None,
+        view: Annotated[
+            Literal["kanban", "summary", "compact"],
+            "kanban=full tickets; summary=counts only; compact=id+title+priority",
+        ] = "kanban",
+        type: Annotated[
+            Optional[Literal["task", "bug", "feature", "decision"]],
+            "Filter by ticket type",
+        ] = None,
+        status: Annotated[Optional[str], "Filter by specific status"] = None,
+        include_terminal: Annotated[bool, "Include terminal statuses (done, resolved, etc.)"] = False,
+        include_archived: Annotated[bool, "Include archived tickets"] = False,
+        limit: Annotated[Optional[int], "Max tickets per column (default 10, 0=all)"] = None,
+        project: Annotated[Optional[str], "Project name"] = None,
     ) -> str:
-        """Get a dashboard view of tickets grouped by status.
-
-        **REQUIRES ACTIVE PROJECT** - Use project_switch() first or pass project param.
-
-        By default, shows only active work — terminal statuses (done, resolved,
-        shipped, etc.) and archived tickets are excluded. Use include_terminal=true
-        or include_archived=true to see them.
-
-        Args:
-            view: kanban (full tickets per column) or summary (counts only)
-                or compact (id+title+priority only — best for large projects)
-            type: Filter by ticket type (task|bug|feature|decision)
-            status: Filter by specific status (e.g., "triage", "backlog")
-            include_terminal: Include terminal statuses (default: false)
-            include_archived: Include archived tickets (default: false)
-            limit: Max tickets per column (default 10). Use 0 for all.
-            project: Project name (default: active project)
-
-        Returns: JSON board view with columns grouped by status
-
-        Examples:
-            ticket_board()
-            ticket_board(view="summary")
-            ticket_board(view="compact")
-            ticket_board(view="summary", type="task")
-            ticket_board(view="kanban", limit=5)
-        """
+        """Ticket board grouped by status. Active statuses only by default."""
         project_check = check_project_func(project)
         if project_check:
             return project_check
@@ -442,33 +380,17 @@ def register_ticketing_tools(
 
     @mcp_instance.tool()
     async def ticket_search(
-        query: str,
-        type: Optional[str] = None,
-        status: Optional[str] = None,
-        limit: int = 20,
-        include_archived: bool = False,
-        project: Optional[str] = None,
+        query: Annotated[str, "Search query string"],
+        type: Annotated[
+            Optional[Literal["task", "bug", "feature", "decision"]],
+            "Filter by ticket type",
+        ] = None,
+        status: Annotated[Optional[str], "Filter by status"] = None,
+        limit: Annotated[int, "Max results"] = 20,
+        include_archived: Annotated[bool, "Include archived tickets"] = False,
+        project: Annotated[Optional[str], "Project name"] = None,
     ) -> str:
-        """Search tickets using full-text search (BM25).
-
-        **REQUIRES ACTIVE PROJECT** - Use project_switch() first or pass project param.
-
-        By default, archived tickets are excluded. Use include_archived=true to search all.
-
-        Args:
-            query: Search query string
-            type: Filter by ticket type
-            status: Filter by status
-            limit: Max results (default: 20)
-            include_archived: Include archived tickets (default: false)
-            project: Project name (default: active project)
-
-        Returns: JSON search results ranked by relevance
-
-        Examples:
-            ticket_search(query="authentication bug")
-            ticket_search(query="deploy", type="task", status="in_progress")
-        """
+        """Full-text search (BM25) over tickets. Excludes archived by default."""
         project_check = check_project_func(project)
         if project_check:
             return project_check
