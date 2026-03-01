@@ -69,6 +69,38 @@ def get_ticket_links_table_sql(schema: str) -> sql.Composed:
     """).format(sch, sch, sch)
 
 
+def get_ticket_context_links_table_sql(schema: str) -> sql.Composed:
+    """Ticket↔context links table DDL for the given schema."""
+    sch = sql.Identifier(schema)
+    return sql.SQL("""
+        CREATE TABLE IF NOT EXISTS {}.ticket_context_links (
+            id SERIAL PRIMARY KEY,
+            ticket_id INTEGER NOT NULL,
+            context_label TEXT NOT NULL,
+            context_version TEXT NOT NULL DEFAULT 'latest',
+            link_type TEXT NOT NULL DEFAULT 'related',
+            created_at DOUBLE PRECISION,
+            FOREIGN KEY (ticket_id) REFERENCES {}.tickets(id) ON DELETE CASCADE,
+            UNIQUE(ticket_id, context_label, context_version)
+        );
+    """).format(sch, sch)
+
+
+def get_ticket_context_links_indexes_sql(schema: str) -> sql.Composed:
+    """Indexes for ticket_context_links in the given schema."""
+    sch = sql.Identifier(schema)
+    return sql.SQL("""
+        CREATE INDEX IF NOT EXISTS {idx_context}
+            ON {sch}.ticket_context_links(context_label);
+        CREATE INDEX IF NOT EXISTS {idx_ticket}
+            ON {sch}.ticket_context_links(ticket_id);
+    """).format(
+        sch=sch,
+        idx_context=sql.Identifier(f"idx_{schema}_ticket_context_links_context"),
+        idx_ticket=sql.Identifier(f"idx_{schema}_ticket_context_links_ticket"),
+    )
+
+
 def get_tickets_indexes_sql(schema: str) -> sql.Composed:
     """Indexes for ticket tables in the given schema."""
     sch = sql.Identifier(schema)

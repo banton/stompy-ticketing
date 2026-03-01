@@ -49,6 +49,59 @@ def get_archive_migrations(start_id: int = 41) -> List[Dict[str, Any]]:
     ]
 
 
+def get_context_link_migrations(start_id: int = 32) -> List[Dict[str, Any]]:
+    """Get migration definitions for ticket↔context linking support.
+
+    Args:
+        start_id: Starting migration ID. Default 32 (after ticketing 27-31).
+            In production this will be set to the next available core migration ID.
+
+    Returns:
+        List of migration dictionaries.
+    """
+    return [
+        # Migration N: Create ticket_context_links table
+        {
+            "id": start_id,
+            "description": "create_ticket_context_links_table",
+            "type": CUSTOM,
+            "table": "ticket_context_links",
+            "schema": PROJECT_SCHEMA,
+            "spec": {
+                "create_if_not_exists": True,
+                "sql": """
+                    CREATE TABLE IF NOT EXISTS {schema}.ticket_context_links (
+                        id SERIAL PRIMARY KEY,
+                        ticket_id INTEGER NOT NULL,
+                        context_label TEXT NOT NULL,
+                        context_version TEXT NOT NULL DEFAULT 'latest',
+                        link_type TEXT NOT NULL DEFAULT 'related',
+                        created_at DOUBLE PRECISION,
+                        FOREIGN KEY (ticket_id) REFERENCES {schema}.tickets(id) ON DELETE CASCADE,
+                        UNIQUE(ticket_id, context_label, context_version)
+                    )
+                """,
+            },
+        },
+        # Migration N+1: Add indexes for ticket_context_links
+        {
+            "id": start_id + 1,
+            "description": "add_ticket_context_links_indexes",
+            "type": CUSTOM,
+            "table": "ticket_context_links",
+            "schema": PROJECT_SCHEMA,
+            "spec": {
+                "sql": """
+                    CREATE INDEX IF NOT EXISTS idx_ticket_context_links_context
+                        ON {schema}.ticket_context_links(context_label);
+                    CREATE INDEX IF NOT EXISTS idx_ticket_context_links_ticket
+                        ON {schema}.ticket_context_links(ticket_id);
+                """,
+            },
+        },
+    ]
+
+
 def get_ticket_migrations(start_id: int = 26) -> List[Dict[str, Any]]:
     """Get migration definitions for ticket tables.
 

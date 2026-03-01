@@ -33,6 +33,13 @@ class LinkType(str, Enum):
     duplicate = "duplicate"
 
 
+class ContextLinkType(str, Enum):
+    implements = "implements"
+    references = "references"
+    updates = "updates"
+    related = "related"
+
+
 # --------------------------------------------------------------------------- #
 # Request models                                                              #
 # --------------------------------------------------------------------------- #
@@ -65,6 +72,12 @@ class TicketTransition(BaseModel):
 class TicketLinkCreate(BaseModel):
     target_id: int
     link_type: LinkType = LinkType.related
+
+
+class ContextLinkCreate(BaseModel):
+    context_label: str
+    context_version: str = "latest"
+    link_type: ContextLinkType = ContextLinkType.related
 
 
 class BatchMoveRequest(BaseModel):
@@ -133,6 +146,18 @@ class TicketResponse(BaseModel):
     archived_at: Optional[float] = None
     history: List[TicketHistoryEntry] = Field(default_factory=list)
     links: List[TicketLinkResponse] = Field(default_factory=list)
+
+
+class ContextLinkResponse(BaseModel):
+    id: int
+    ticket_id: int
+    context_label: str
+    context_version: str
+    link_type: str
+    created_at: Optional[float] = None
+    # Denormalized for display (fetched from ticket row)
+    ticket_title: Optional[str] = None
+    ticket_status: Optional[str] = None
 
 
 class TicketListResponse(BaseModel):
