@@ -9,6 +9,16 @@ import json
 from contextlib import contextmanager
 from unittest.mock import MagicMock, patch
 
+from toon import decode as toon_decode
+
+
+def _parse(text):
+    """Parse TOON or JSON response."""
+    try:
+        return toon_decode(text)
+    except Exception:
+        return json.loads(text)
+
 import pytest
 
 from stompy_ticketing.mcp_tools import register_ticketing_tools
@@ -412,7 +422,7 @@ class TestTicketListPagination:
         raw = asyncio.get_event_loop().run_until_complete(
             ticket_fn(action="list")
         )
-        data = json.loads(raw)
+        data = _parse(raw)
 
         assert data["total"] == 54
         assert data["limit"] == 20
@@ -433,7 +443,7 @@ class TestTicketListPagination:
         raw = asyncio.get_event_loop().run_until_complete(
             ticket_fn(action="list", limit=500)
         )
-        data = json.loads(raw)
+        data = _parse(raw)
 
         # Should be capped to 200 by min() in the tool
         mock_svc.list_tickets.assert_called_once()

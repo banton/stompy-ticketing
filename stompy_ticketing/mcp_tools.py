@@ -11,10 +11,13 @@ and helper functions from the host (Stompy), decoupling this plugin from
 Stompy internals.
 """
 
+import fnmatch
 import json
 from typing import Annotated, Any, Callable, List, Literal, Optional
 
 from stompy_ticketing.models import (
+    ContextLinkCreate,
+    ContextLinkType,
     LinkType,
     Priority,
     TicketCreate,
@@ -26,14 +29,23 @@ from stompy_ticketing.models import (
 from stompy_ticketing.service import InvalidTransitionError, TicketService
 
 
+def _toon_encode(data):
+    """Encode as TOON (Token-Oriented Object Notation), JSON fallback."""
+    try:
+        from toon import encode
+        return encode(data)
+    except Exception:
+        return json.dumps(data, default=str)
+
+
 def _safe_json(data: Any) -> str:
-    """Serialize to JSON with error wrapping."""
+    """Serialize data as TOON for token-efficient MCP responses."""
     try:
         if hasattr(data, "model_dump"):
-            return json.dumps(data.model_dump(), default=str)
+            return _toon_encode(data.model_dump())
         if hasattr(data, "dict"):
-            return json.dumps(data.dict(), default=str)
-        return json.dumps(data, default=str)
+            return _toon_encode(data.dict())
+        return _toon_encode(data)
     except Exception as e:
         return json.dumps({"error": str(e)})
 
@@ -91,6 +103,7 @@ def register_ticketing_tools(
         offset: Annotated[Optional[int], "Skip N tickets for list pagination"] = None,
         include_archived: Annotated[bool, "Include archived tickets in list"] = False,
         project: Annotated[Optional[str], "Project name"] = None,
+        grep: Annotated[Optional[str], "Filter list results by title (fnmatch glob, e.g. 'auth*', '*bug*')"] = None,
     ) -> str:
         """CRUD + lifecycle for tickets. Pass project= on every call.
 
@@ -200,6 +213,12 @@ def register_ticketing_tools(
                         include_archived=include_archived,
                     )
                     result = service.list_tickets(conn, schema, filters)
+                    if grep and hasattr(result, "tickets"):
+                        result.tickets = [
+                            t for t in result.tickets
+                            if fnmatch.fnmatch(t.title if hasattr(t, "title") else t.get("title", ""), grep)
+                        ]
+                        result.total = len(result.tickets)
                     return _safe_json(result)
 
                 elif action == "archive":
@@ -278,18 +297,25 @@ def register_ticketing_tools(
             "Operation to perform",
         ],
         ticket_id: Annotated[Optional[int], "Source ticket ID (add/list)"] = None,
-        target_id: Annotated[Optional[int], "Target ticket ID (add)"] = None,
+        target_id: Annotated[Optional[int], "Target ticket ID for ticket-to-ticket links (add)"] = None,
         link_type: Annotated[
-            Optional[Literal["blocks", "parent", "related", "duplicate"]],
+            Optional[Literal["blocks", "parent", "related", "duplicate", "implements", "references", "updates"]],
             "Relationship type (default: related)",
         ] = None,
         link_id: Annotated[Optional[int], "Link ID to remove (remove)"] = None,
         project: Annotated[Optional[str], "Project name"] = None,
+        context_label: Annotated[Optional[str], "Context label for ticket↔context links (add/list)"] = None,
+        context_version: Annotated[Optional[str], "Context version (default: latest)"] = "latest",
     ) -> str:
-        """Manage relationships between tickets. Pass project= on every call.
+        """Manage relationships between tickets and/or contexts. Pass project= on every call.
 
-        action → required params:
-          add    → ticket_id + target_id (+ optional link_type)
+        Ticket-to-ticket links (target_id present):
+          add    → ticket_id + target_id (+ optional link_type: blocks/parent/related/duplicate)
+          remove → link_id
+          list   → ticket_id (returns both ticket and context links)
+
+        Ticket-to-context links (context_label present):
+          add    → ticket_id + context_label (+ optional link_type: implements/references/updates/related)
           remove → link_id
           list   → ticket_id"""
         project_check = check_project_func(project)
@@ -302,21 +328,49 @@ def register_ticketing_tools(
                 schema = _get_schema(project_name)
 
                 if action == "add":
-                    if not ticket_id or not target_id:
-                        return json.dumps(
-                            {"error": "ticket_id and target_id are required for add"}
+                    if context_label:
+                        # Ticket-to-context link
+                        if not ticket_id:
+                            return json.dumps(
+                                {"error": "ticket_id is required for context link add"}
+                            )
+                        # Validate link_type for context links
+                        ctx_link_types = {e.value for e in ContextLinkType}
+                        effective_link_type = link_type or "related"
+                        if effective_link_type not in ctx_link_types:
+                            effective_link_type = "related"
+                        data = ContextLinkCreate(
+                            context_label=context_label,
+                            context_version=context_version or "latest",
+                            link_type=ContextLinkType(effective_link_type),
                         )
-                    data = TicketLinkCreate(
-                        target_id=target_id,
-                        link_type=LinkType(link_type) if link_type else LinkType.related,
-                    )
-                    result = service.add_link(conn, schema, ticket_id, data)
-                    return _safe_json({"status": "linked", "link": result.model_dump()})
+                        result = service.add_context_link(conn, schema, ticket_id, data)
+                        return _safe_json({"status": "linked", "context_link": result.model_dump()})
+                    else:
+                        # Ticket-to-ticket link
+                        if not ticket_id or not target_id:
+                            return json.dumps(
+                                {"error": "ticket_id and target_id are required for ticket link add"}
+                            )
+                        # Validate link_type for ticket links
+                        ticket_link_types = {e.value for e in LinkType}
+                        effective_link_type = link_type or "related"
+                        if effective_link_type not in ticket_link_types:
+                            effective_link_type = "related"
+                        data = TicketLinkCreate(
+                            target_id=target_id,
+                            link_type=LinkType(effective_link_type),
+                        )
+                        result = service.add_link(conn, schema, ticket_id, data)
+                        return _safe_json({"status": "linked", "link": result.model_dump()})
 
                 elif action == "remove":
                     if not link_id:
                         return json.dumps({"error": "link_id is required for remove"})
+                    # Try ticket-to-ticket link first, then context link
                     removed = service.remove_link(conn, schema, link_id)
+                    if not removed:
+                        removed = service.remove_context_link(conn, schema, link_id)
                     if not removed:
                         return json.dumps({"error": f"Link {link_id} not found"})
                     return json.dumps({"status": "removed", "link_id": link_id})
@@ -324,8 +378,13 @@ def register_ticketing_tools(
                 elif action == "list":
                     if not ticket_id:
                         return json.dumps({"error": "ticket_id is required for list"})
-                    links = service.list_links(conn, schema, ticket_id)
-                    return _safe_json({"ticket_id": ticket_id, "links": [l.model_dump() for l in links]})
+                    ticket_links = service.list_links(conn, schema, ticket_id)
+                    context_links = service.list_context_links_for_ticket(conn, schema, ticket_id)
+                    return _safe_json({
+                        "ticket_id": ticket_id,
+                        "ticket_links": [l.model_dump() for l in ticket_links],
+                        "context_links": [l.model_dump() for l in context_links],
+                    })
 
                 else:
                     return json.dumps(

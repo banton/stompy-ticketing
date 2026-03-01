@@ -19,6 +19,8 @@ from stompy_ticketing.models import (
     BoardColumn,
     BoardView,
     CompactTicket,
+    ContextLinkCreate,
+    ContextLinkResponse,
     Priority,
     SearchResult,
     TicketCreate,
@@ -1500,6 +1502,179 @@ class TicketService:
         """
         cur = conn.cursor()
         return self._get_links_for_ticket(cur, schema, ticket_id)
+
+    # --- Context link methods --- #
+
+    def add_context_link(
+        self,
+        conn: DBConnection,
+        schema: str,
+        ticket_id: int,
+        data: ContextLinkCreate,
+    ) -> ContextLinkResponse:
+        """Add a link from a ticket to a context.
+
+        Args:
+            conn: Database connection.
+            schema: PostgreSQL schema name.
+            ticket_id: Source ticket ID.
+            data: Context link creation data.
+
+        Returns:
+            Created context link response.
+        """
+        cur = conn.cursor()
+        try:
+            now = time.time()
+            cur.execute(
+                sql.SQL("""
+                INSERT INTO {}.ticket_context_links
+                    (ticket_id, context_label, context_version, link_type, created_at)
+                VALUES (%s, %s, %s, %s, %s)
+                RETURNING *
+                """).format(sql.Identifier(schema)),
+                (ticket_id, data.context_label, data.context_version, data.link_type.value, now),
+            )
+            row = cur.fetchone()
+
+            # Enrich with ticket title/status for display
+            cur.execute(
+                sql.SQL("SELECT title, status FROM {}.tickets WHERE id = %s").format(
+                    sql.Identifier(schema)
+                ),
+                (ticket_id,),
+            )
+            ticket = cur.fetchone()
+            conn.commit()
+            return ContextLinkResponse(
+                id=row["id"],
+                ticket_id=row["ticket_id"],
+                context_label=row["context_label"],
+                context_version=row["context_version"],
+                link_type=row["link_type"],
+                created_at=row.get("created_at"),
+                ticket_title=ticket["title"] if ticket else None,
+                ticket_status=ticket["status"] if ticket else None,
+            )
+        except Exception:
+            conn.rollback()
+            raise
+
+    def remove_context_link(
+        self,
+        conn: DBConnection,
+        schema: str,
+        link_id: int,
+    ) -> bool:
+        """Remove a ticket↔context link.
+
+        Args:
+            conn: Database connection.
+            schema: PostgreSQL schema name.
+            link_id: Context link ID.
+
+        Returns:
+            True if deleted, False if not found.
+        """
+        cur = conn.cursor()
+        try:
+            cur.execute(
+                sql.SQL(
+                    "DELETE FROM {}.ticket_context_links WHERE id = %s RETURNING id"
+                ).format(sql.Identifier(schema)),
+                (link_id,),
+            )
+            result = cur.fetchone()
+            conn.commit()
+            return result is not None
+        except Exception:
+            conn.rollback()
+            raise
+
+    def list_context_links_for_ticket(
+        self,
+        conn: DBConnection,
+        schema: str,
+        ticket_id: int,
+    ) -> List[ContextLinkResponse]:
+        """List all context links for a ticket.
+
+        Args:
+            conn: Database connection.
+            schema: PostgreSQL schema name.
+            ticket_id: Ticket ID.
+
+        Returns:
+            List of context link responses.
+        """
+        cur = conn.cursor()
+        cur.execute(
+            sql.SQL("""
+            SELECT tcl.*, t.title AS ticket_title, t.status AS ticket_status
+            FROM {sch}.ticket_context_links tcl
+            JOIN {sch}.tickets t ON t.id = tcl.ticket_id
+            WHERE tcl.ticket_id = %s
+            ORDER BY tcl.created_at DESC
+            """).format(sch=sql.Identifier(schema)),
+            (ticket_id,),
+        )
+        rows = cur.fetchall()
+        return [
+            ContextLinkResponse(
+                id=r["id"],
+                ticket_id=r["ticket_id"],
+                context_label=r["context_label"],
+                context_version=r["context_version"],
+                link_type=r["link_type"],
+                created_at=r.get("created_at"),
+                ticket_title=r.get("ticket_title"),
+                ticket_status=r.get("ticket_status"),
+            )
+            for r in rows
+        ]
+
+    def list_tickets_for_context(
+        self,
+        conn: DBConnection,
+        schema: str,
+        context_label: str,
+    ) -> List[ContextLinkResponse]:
+        """List all tickets linked to a given context label.
+
+        Args:
+            conn: Database connection.
+            schema: PostgreSQL schema name.
+            context_label: Context label to look up.
+
+        Returns:
+            List of context link responses (with ticket info denormalized).
+        """
+        cur = conn.cursor()
+        cur.execute(
+            sql.SQL("""
+            SELECT tcl.*, t.title AS ticket_title, t.status AS ticket_status
+            FROM {sch}.ticket_context_links tcl
+            JOIN {sch}.tickets t ON t.id = tcl.ticket_id
+            WHERE tcl.context_label = %s
+            ORDER BY tcl.created_at DESC
+            LIMIT 10
+            """).format(sch=sql.Identifier(schema)),
+            (context_label,),
+        )
+        rows = cur.fetchall()
+        return [
+            ContextLinkResponse(
+                id=r["id"],
+                ticket_id=r["ticket_id"],
+                context_label=r["context_label"],
+                context_version=r["context_version"],
+                link_type=r["link_type"],
+                created_at=r.get("created_at"),
+                ticket_title=r.get("ticket_title"),
+                ticket_status=r.get("ticket_status"),
+            )
+            for r in rows
+        ]
 
     # --- Helpers --- #
 
