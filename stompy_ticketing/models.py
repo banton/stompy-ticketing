@@ -99,6 +99,7 @@ class TicketListFilters(BaseModel):
     priority: Optional[Priority] = None
     assignee: Optional[str] = None
     search: Optional[str] = None
+    tags: Optional[str] = None  # Comma-separated, match ANY tag via LIKE
     limit: int = Field(20, ge=1, le=200)
     offset: int = Field(0, ge=0)
     include_archived: bool = False

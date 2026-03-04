@@ -682,6 +682,13 @@ class TicketService:
             where_clauses.append("assignee = %s")
             params.append(filters.assignee)
 
+        if filters.tags:
+            tag_list = [t.strip() for t in filters.tags.split(",") if t.strip()]
+            if tag_list:
+                tag_clauses = " OR ".join("tags LIKE %s" for _ in tag_list)
+                where_clauses.append(f"({tag_clauses})")
+                params.extend(f"%{t}%" for t in tag_list)
+
         if filters.search:
             tsquery_param = self._build_or_tsquery_param(filters.search)
             where_clauses.append(
