@@ -208,6 +208,7 @@ def register_ticketing_tools(
                         status=status,
                         priority=Priority(priority) if priority else None,
                         assignee=assignee,
+                        tags=tags,
                         limit=effective_limit,
                         offset=effective_offset,
                         include_archived=include_archived,
