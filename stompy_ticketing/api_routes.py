@@ -236,6 +236,19 @@ async def batch_close(name: str, body: BatchCloseRequest):
     return result
 
 
+@router.get("/tags")
+async def list_tags(
+    name: str,
+    include_archived: bool = Query(False),
+):
+    """List all unique tags with usage counts across tickets."""
+    _require_db()
+    schema = _get_schema(name)
+    with _get_db_for_project(name) as conn:
+        tags = _service.list_tags(conn, schema, include_archived=include_archived)
+        return {"tags": tags, "total": len(tags)}
+
+
 @router.get("/{ticket_id}", response_model=TicketResponse)
 async def get_ticket(name: str, ticket_id: int):
     """Get a ticket by ID with history and links."""

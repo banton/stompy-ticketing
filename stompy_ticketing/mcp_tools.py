@@ -79,7 +79,7 @@ def register_ticketing_tools(
     @mcp_instance.tool()
     async def ticket(
         action: Annotated[
-            Literal["create", "get", "update", "move", "list", "close", "archive", "batch_move", "batch_close"],
+            Literal["create", "get", "update", "move", "list", "list_tags", "close", "archive", "batch_move", "batch_close"],
             "Operation to perform",
         ],
         title: Annotated[Optional[str], "Ticket title (create/update)"] = None,
@@ -112,7 +112,8 @@ def register_ticketing_tools(
           get         → ticket_id
           update      → ticket_id + fields to change
           move        → ticket_id + status
-          list        → optional filters (type/status/priority/assignee)
+          list        → optional filters (type/status/priority/assignee/tags)
+          list_tags   → show all unique tags with usage counts (useful before filtering by tags)
           close       → ticket_id
           archive     → (none)
           batch_move  → ticket_ids + status; confirm=True to execute
@@ -222,6 +223,10 @@ def register_ticketing_tools(
                         result.total = len(result.tickets)
                     return _safe_json(result)
 
+                elif action == "list_tags":
+                    result = service.list_tags(conn, schema, include_archived=include_archived)
+                    return _safe_json({"tags": result, "total": len(result)})
+
                 elif action == "archive":
                     count = service.archive_stale_tickets(conn, schema)
                     return json.dumps({
@@ -276,7 +281,7 @@ def register_ticketing_tools(
                         {
                             "error": f"Unknown action: {action}",
                             "valid_actions": [
-                                "create", "get", "update", "move", "list",
+                                "create", "get", "update", "move", "list", "list_tags",
                                 "close", "archive", "batch_move", "batch_close",
                             ],
                         }
