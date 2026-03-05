@@ -687,7 +687,10 @@ class TicketService:
             if tag_list:
                 tag_clauses = " OR ".join("tags LIKE %s" for _ in tag_list)
                 where_clauses.append(f"({tag_clauses})")
-                params.extend(f"%{t}%" for t in tag_list)
+                # Escape LIKE metacharacters in tag values before wrapping with %
+                for t in tag_list:
+                    escaped = t.replace("%", r"\%").replace("_", r"\_")
+                    params.append(f"%{escaped}%")
 
         if filters.search:
             tsquery_param = self._build_or_tsquery_param(filters.search)
