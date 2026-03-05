@@ -786,6 +786,29 @@ class TicketService:
             return ""
         return " | ".join(terms)
 
+    def list_tags(
+        self,
+        conn,
+        schema: str,
+        include_archived: bool = False,
+    ) -> List[Dict[str, Any]]:
+        """List all unique tags with usage counts across tickets.
+
+        Uses jsonb_array_elements_text to unnest the JSON array stored in the
+        TEXT tags column. Tickets with NULL tags are naturally excluded by the
+        lateral join.
+        """
+        cur = conn.cursor()
+        where = sql.SQL("WHERE archived_at IS NULL") if not include_archived else sql.SQL("")
+        cur.execute(
+            sql.SQL(
+                "SELECT tag, COUNT(*) as count"
+                " FROM {}.tickets, jsonb_array_elements_text(tags::jsonb) AS tag"
+                " {} GROUP BY tag ORDER BY count DESC, tag ASC"
+            ).format(sql.Identifier(schema), where),
+        )
+        return [{"tag": r["tag"], "count": r["count"]} for r in cur.fetchall()]
+
     def search_tickets(
         self,
         conn: DBConnection,

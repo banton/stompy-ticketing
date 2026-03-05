@@ -240,3 +240,72 @@ class TestMCPToolTagsParam:
         assert filters.tags == "needs-review"
         assert filters.status == "triage"
         assert filters.type == TicketType.bug
+
+
+# --------------------------------------------------------------------------- #
+# list_tags service tests                                                      #
+# --------------------------------------------------------------------------- #
+
+
+class TestListTags:
+    """Test the list_tags service method for tag discovery."""
+
+    def setup_method(self):
+        self.service = TicketService()
+
+    def test_list_tags_returns_unique_tags_with_counts(self):
+        """list_tags should return each unique tag with its usage count."""
+        rows = [
+            {"tag": "worker-alert", "count": 5},
+            {"tag": "needs-review", "count": 3},
+            {"tag": "guardian", "count": 1},
+        ]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+
+        result = self.service.list_tags(conn, SCHEMA)
+
+        assert len(result) == 3
+        assert result[0] == {"tag": "worker-alert", "count": 5}
+        assert result[1] == {"tag": "needs-review", "count": 3}
+        assert result[2] == {"tag": "guardian", "count": 1}
+
+    def test_list_tags_empty_when_no_tags(self):
+        """list_tags should return empty list when no tickets have tags."""
+        conn, cur = _mock_conn_and_cursor(rows=[])
+
+        result = self.service.list_tags(conn, SCHEMA)
+
+        assert result == []
+
+    def test_list_tags_excludes_archived_by_default(self):
+        """By default, list_tags should filter out archived tickets."""
+        conn, cur = _mock_conn_and_cursor(rows=[])
+
+        self.service.list_tags(conn, SCHEMA, include_archived=False)
+
+        call_args = cur.execute.call_args_list[0]
+        query_str = _sql_to_str(call_args[0][0])
+        assert "archived_at IS NULL" in query_str
+
+    def test_list_tags_includes_archived_when_requested(self):
+        """When include_archived=True, no archived_at filter should be present."""
+        conn, cur = _mock_conn_and_cursor(rows=[])
+
+        self.service.list_tags(conn, SCHEMA, include_archived=True)
+
+        call_args = cur.execute.call_args_list[0]
+        query_str = _sql_to_str(call_args[0][0])
+        assert "archived_at" not in query_str
+
+    def test_list_tags_sql_uses_jsonb_unnest(self):
+        """The SQL should use jsonb_array_elements_text to unnest tags."""
+        conn, cur = _mock_conn_and_cursor(rows=[])
+
+        self.service.list_tags(conn, SCHEMA)
+
+        call_args = cur.execute.call_args_list[0]
+        query_str = _sql_to_str(call_args[0][0])
+        assert "jsonb_array_elements_text" in query_str
+        assert "tags::jsonb" in query_str
+        assert "GROUP BY tag" in query_str
+        assert "ORDER BY count DESC" in query_str
