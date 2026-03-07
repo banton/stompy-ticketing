@@ -54,8 +54,8 @@ STATE_MACHINES: Dict[str, Dict[str, Any]] = {
         "transitions": {
             "backlog": ["in_progress", "done", "cancelled"],
             "in_progress": ["done", "cancelled"],
-            "done": [],
-            "cancelled": [],
+            "done": ["backlog"],
+            "cancelled": ["backlog"],
         },
     },
     "bug": {
@@ -65,8 +65,8 @@ STATE_MACHINES: Dict[str, Dict[str, Any]] = {
             "triage": ["confirmed", "wont_fix"],
             "confirmed": ["in_progress"],
             "in_progress": ["resolved", "wont_fix"],
-            "resolved": [],
-            "wont_fix": [],
+            "resolved": ["triage"],
+            "wont_fix": ["triage"],
         },
     },
     "feature": {
@@ -76,8 +76,8 @@ STATE_MACHINES: Dict[str, Dict[str, Any]] = {
             "proposed": ["approved", "rejected"],
             "approved": ["in_progress"],
             "in_progress": ["shipped", "rejected"],
-            "shipped": [],
-            "rejected": [],
+            "shipped": ["proposed"],
+            "rejected": ["proposed"],
         },
     },
     "decision": {
@@ -85,7 +85,7 @@ STATE_MACHINES: Dict[str, Dict[str, Any]] = {
         "terminal": ["decided", "deferred"],
         "transitions": {
             "open": ["decided", "deferred"],
-            "decided": [],
+            "decided": ["open"],
             "deferred": ["open"],  # Deferred decisions can be reopened
         },
     },
@@ -1408,6 +1408,10 @@ class TicketService:
 
         # Determine which terminal to target
         preferred = target_terminal or POSITIVE_TERMINALS.get(ticket_type)
+
+        # Already at a terminal status — no transitions needed
+        if current_status in terminals:
+            return None
 
         # Strategy: find path to preferred terminal first; fall back to any
         from collections import deque

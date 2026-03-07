@@ -70,31 +70,31 @@ stompy-ticketing/
 
 ### task
 ```
-backlog -> in_progress -> done
-                       -> cancelled
+backlog -> in_progress -> done -> backlog (reopen)
+                       -> cancelled -> backlog (reopen)
 backlog -> cancelled
 ```
 Initial: `backlog` | Terminal: `done`, `cancelled`
 
 ### bug
 ```
-triage -> confirmed -> in_progress -> resolved
-                                   -> wont_fix
+triage -> confirmed -> in_progress -> resolved -> triage (reopen)
+                                   -> wont_fix -> triage (reopen)
 triage -> wont_fix
 ```
 Initial: `triage` | Terminal: `resolved`, `wont_fix`
 
 ### feature
 ```
-proposed -> approved -> in_progress -> shipped
-                                    -> rejected
+proposed -> approved -> in_progress -> shipped -> proposed (reopen)
+                                    -> rejected -> proposed (reopen)
 proposed -> rejected
 ```
 Initial: `proposed` | Terminal: `shipped`, `rejected`
 
 ### decision
 ```
-open -> decided
+open -> decided -> open (reopen)
 open -> deferred -> open (reopen)
 ```
 Initial: `open` | Terminal: `decided`, `deferred`
