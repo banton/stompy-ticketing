@@ -354,6 +354,10 @@ class TicketService:
                 updates["description"] = data.description
                 history_entries.append(("description", current.get("description"), data.description))
 
+            if data.type is not None and data.type.value != current["type"]:
+                updates["type"] = data.type.value
+                history_entries.append(("type", current["type"], data.type.value))
+
             if data.priority is not None and data.priority.value != current["priority"]:
                 updates["priority"] = data.priority.value
                 history_entries.append(("priority", current["priority"], data.priority.value))
