@@ -54,8 +54,8 @@ STATE_MACHINES: Dict[str, Dict[str, Any]] = {
         "transitions": {
             "backlog": ["in_progress", "done", "cancelled"],
             "in_progress": ["done", "cancelled"],
-            "done": [],
-            "cancelled": [],
+            "done": ["backlog"],
+            "cancelled": ["backlog"],
         },
     },
     "bug": {
@@ -65,8 +65,8 @@ STATE_MACHINES: Dict[str, Dict[str, Any]] = {
             "triage": ["confirmed", "wont_fix"],
             "confirmed": ["in_progress"],
             "in_progress": ["resolved", "wont_fix"],
-            "resolved": [],
-            "wont_fix": [],
+            "resolved": ["triage"],
+            "wont_fix": ["triage"],
         },
     },
     "feature": {
@@ -76,8 +76,8 @@ STATE_MACHINES: Dict[str, Dict[str, Any]] = {
             "proposed": ["approved", "rejected"],
             "approved": ["in_progress"],
             "in_progress": ["shipped", "rejected"],
-            "shipped": [],
-            "rejected": [],
+            "shipped": ["proposed"],
+            "rejected": ["proposed"],
         },
     },
     "decision": {
@@ -85,7 +85,7 @@ STATE_MACHINES: Dict[str, Dict[str, Any]] = {
         "terminal": ["decided", "deferred"],
         "transitions": {
             "open": ["decided", "deferred"],
-            "decided": [],
+            "decided": ["open"],
             "deferred": ["open"],  # Deferred decisions can be reopened
         },
     },
@@ -353,6 +353,10 @@ class TicketService:
             if data.description is not None and data.description != current.get("description"):
                 updates["description"] = data.description
                 history_entries.append(("description", current.get("description"), data.description))
+
+            if data.type is not None and data.type.value != current["type"]:
+                updates["type"] = data.type.value
+                history_entries.append(("type", current["type"], data.type.value))
 
             if data.priority is not None and data.priority.value != current["priority"]:
                 updates["priority"] = data.priority.value
@@ -1404,6 +1408,10 @@ class TicketService:
 
         # Determine which terminal to target
         preferred = target_terminal or POSITIVE_TERMINALS.get(ticket_type)
+
+        # Already at a terminal status — no transitions needed
+        if current_status in terminals:
+            return None
 
         # Strategy: find path to preferred terminal first; fall back to any
         from collections import deque

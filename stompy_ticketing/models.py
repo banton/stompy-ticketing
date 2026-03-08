@@ -59,6 +59,7 @@ class TicketCreate(BaseModel):
 class TicketUpdate(BaseModel):
     title: Optional[str] = Field(None, min_length=1, max_length=500)
     description: Optional[str] = None
+    type: Optional[TicketType] = None
     priority: Optional[Priority] = None
     assignee: Optional[str] = None
     tags: Optional[List[str]] = None

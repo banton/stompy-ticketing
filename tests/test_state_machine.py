@@ -127,6 +127,28 @@ class TestValidTransitions:
         """Deferred decisions can be reopened."""
         assert validate_transition("decision", "deferred", "open") is True
 
+    # --- Reopen from terminal states ---
+    def test_should_reopen_bug_from_wont_fix_to_triage(self):
+        assert validate_transition("bug", "wont_fix", "triage") is True
+
+    def test_should_reopen_bug_from_resolved_to_triage(self):
+        assert validate_transition("bug", "resolved", "triage") is True
+
+    def test_should_reopen_task_from_done_to_backlog(self):
+        assert validate_transition("task", "done", "backlog") is True
+
+    def test_should_reopen_task_from_cancelled_to_backlog(self):
+        assert validate_transition("task", "cancelled", "backlog") is True
+
+    def test_should_reopen_feature_from_shipped_to_proposed(self):
+        assert validate_transition("feature", "shipped", "proposed") is True
+
+    def test_should_reopen_feature_from_rejected_to_proposed(self):
+        assert validate_transition("feature", "rejected", "proposed") is True
+
+    def test_should_reopen_decision_from_decided_to_open(self):
+        assert validate_transition("decision", "decided", "open") is True
+
 
 # --------------------------------------------------------------------------- #
 # Invalid transitions                                                         #
@@ -135,6 +157,7 @@ class TestValidTransitions:
 
 class TestInvalidTransitions:
     def test_task_done_to_in_progress(self):
+        """done can reopen to backlog but NOT jump to in_progress."""
         with pytest.raises(InvalidTransitionError, match="Cannot transition"):
             validate_transition("task", "done", "in_progress", raise_on_invalid=True)
 
@@ -143,17 +166,15 @@ class TestInvalidTransitions:
         result = validate_transition("task", "backlog", "done", raise_on_invalid=True)
         assert result is True
 
-    def test_bug_resolved_to_triage(self):
+    def test_bug_resolved_to_confirmed_is_invalid(self):
+        """resolved can reopen to triage but NOT jump to confirmed."""
         with pytest.raises(InvalidTransitionError):
-            validate_transition("bug", "resolved", "triage", raise_on_invalid=True)
+            validate_transition("bug", "resolved", "confirmed", raise_on_invalid=True)
 
     def test_feature_shipped_to_in_progress(self):
+        """shipped can reopen to proposed but NOT jump to in_progress."""
         with pytest.raises(InvalidTransitionError):
             validate_transition("feature", "shipped", "in_progress", raise_on_invalid=True)
-
-    def test_decision_decided_to_open(self):
-        with pytest.raises(InvalidTransitionError):
-            validate_transition("decision", "decided", "open", raise_on_invalid=True)
 
     def test_same_status_is_invalid(self):
         with pytest.raises(InvalidTransitionError):
@@ -185,20 +206,17 @@ class TestStateMachineCompleteness:
             initial = get_initial_status(ticket_type)
             assert initial in STATE_MACHINES[ticket_type]["transitions"]
 
-    def test_all_terminal_statuses_have_no_outgoing(self):
-        """Terminal statuses should have no outgoing transitions (except deferred->open)."""
+    def test_all_terminal_statuses_reopen_to_initial(self):
+        """Terminal statuses should only transition back to the initial state (reopen)."""
         for ticket_type in STATE_MACHINES:
             sm = STATE_MACHINES[ticket_type]
+            initial = sm["initial"]
             for terminal in sm["terminal"]:
                 outgoing = sm["transitions"].get(terminal, [])
-                # Decision's deferred is special - can reopen
-                if ticket_type == "decision" and terminal == "deferred":
-                    assert outgoing == ["open"]
-                else:
-                    assert outgoing == [], (
-                        f"{ticket_type}.{terminal} should have no outgoing transitions, "
-                        f"got {outgoing}"
-                    )
+                assert outgoing == [initial], (
+                    f"{ticket_type}.{terminal} should reopen to [{initial}], "
+                    f"got {outgoing}"
+                )
 
     def test_all_reachable_statuses_are_defined(self):
         """Every status mentioned in transitions should be a key or listed as initial/terminal."""
