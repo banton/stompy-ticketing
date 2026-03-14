@@ -316,17 +316,16 @@ def register_ticketing_tools(
         context_label: Annotated[Optional[str], "Context label for ticket↔context links (add/list)"] = None,
         context_version: Annotated[Optional[str], "Context version (default: latest)"] = "latest",
     ) -> str:
-        """Add, remove, or list links between tickets (blocks/parent/related/duplicate) or between a ticket and a context (implements/references/updates). Use to trace dependencies. Pass project= on every call.
+        """Link tickets to other tickets or to contexts. Pass project= on every call.
 
-        Ticket-to-ticket links (target_id present):
-          add    → ticket_id + target_id (+ optional link_type: blocks/parent/related/duplicate)
-          remove → link_id
-          list   → ticket_id (returns both ticket and context links)
+        Modes (determined by params):
+          ticket↔ticket: provide target_id (link_type: blocks/parent/related/duplicate)
+          ticket↔context: provide context_label (link_type: implements/references/updates/related)
 
-        Ticket-to-context links (context_label present):
-          add    → ticket_id + context_label (+ optional link_type: implements/references/updates/related)
+        Actions:
+          add    → ticket_id + target_id or context_label
           remove → link_id
-          list   → ticket_id"""
+          list   → ticket_id (returns all links)"""
         project_check = check_project_func(project)
         if project_check:
             return project_check
@@ -421,7 +420,7 @@ def register_ticketing_tools(
         limit: Annotated[Optional[int], "Max tickets per column (default 10, 0=all)"] = None,
         project: Annotated[Optional[str], "Project name"] = None,
     ) -> str:
-        """Ticket board grouped by status. Active statuses only by default."""
+        """Ticket board grouped by status. Excludes terminal statuses (done, cancelled, resolved, wont_fix, shipped, rejected, decided, deferred) by default — pass include_terminal=true to show them."""
         project_check = check_project_func(project)
         if project_check:
             return project_check
