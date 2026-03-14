@@ -117,7 +117,10 @@ def register_ticketing_tools(
           close       → ticket_id
           archive     → (none)
           batch_move  → ticket_ids + status; confirm=True to execute
-          batch_close → ticket_ids; confirm=True to execute"""
+          batch_close → ticket_ids; confirm=True to execute
+
+        Initial statuses: task→backlog, bug→triage, feature→proposed, decision→open.
+        Terminal: task→done/cancelled, bug→resolved/wont_fix, feature→shipped/rejected, decision→decided/deferred."""
         project_check = check_project_func(project)
         if project_check:
             return project_check

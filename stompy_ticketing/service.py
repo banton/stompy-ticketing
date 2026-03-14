@@ -11,7 +11,7 @@ import json
 import time
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 
-from psycopg2 import sql
+from psycopg2 import IntegrityError, sql
 
 from stompy_ticketing.models import (
     BatchItemResult,
@@ -305,6 +305,13 @@ class TicketService:
 
         if include_links:
             response.links = self._get_links_for_ticket(cur, schema, ticket_id)
+            # Also fetch context links
+            try:
+                response.context_links = self.list_context_links_for_ticket(
+                    conn, schema, ticket_id
+                )
+            except Exception:
+                pass  # Table may not exist yet
 
         return response
 
@@ -1490,6 +1497,11 @@ class TicketService:
 
             conn.commit()
             return self._link_row_to_response(row)
+        except IntegrityError:
+            conn.rollback()
+            raise ValueError(
+                f"Link already exists between ticket #{source_id} and #{data.target_id}"
+            )
         except Exception:
             conn.rollback()
             raise
@@ -1596,6 +1608,11 @@ class TicketService:
                 created_at=row.get("created_at"),
                 ticket_title=ticket["title"] if ticket else None,
                 ticket_status=ticket["status"] if ticket else None,
+            )
+        except IntegrityError:
+            conn.rollback()
+            raise ValueError(
+                f"Context link already exists: ticket #{ticket_id} ↔ {data.context_label}"
             )
         except Exception:
             conn.rollback()
