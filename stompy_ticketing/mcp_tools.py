@@ -105,14 +105,14 @@ def register_ticketing_tools(
         project: Annotated[Optional[str], "Project name"] = None,
         grep: Annotated[Optional[str], "Filter list results by title (fnmatch glob, e.g. 'auth*', '*bug*')"] = None,
     ) -> str:
-        """CRUD + lifecycle for tickets. Pass project= on every call.
+        """Create, update, move, close, search, and batch-manage tickets. Supports glob filter on titles (grep param). Pass project= on every call.
 
         action → required params:
           create      → title (type defaults to task)
           get         → ticket_id
           update      → ticket_id + fields to change
           move        → ticket_id + status
-          list        → optional filters (type/status/priority/assignee/tags)
+          list        → optional filters (type/status/priority/assignee/tags/grep)
           list_tags   → show all unique tags with usage counts (useful before filtering by tags)
           close       → ticket_id
           archive     → (none)
@@ -313,7 +313,7 @@ def register_ticketing_tools(
         context_label: Annotated[Optional[str], "Context label for ticket↔context links (add/list)"] = None,
         context_version: Annotated[Optional[str], "Context version (default: latest)"] = "latest",
     ) -> str:
-        """Manage relationships between tickets and/or contexts. Pass project= on every call.
+        """Add, remove, or list links between tickets (blocks/parent/related/duplicate) or between a ticket and a context (implements/references/updates). Use to trace dependencies. Pass project= on every call.
 
         Ticket-to-ticket links (target_id present):
           add    → ticket_id + target_id (+ optional link_type: blocks/parent/related/duplicate)
