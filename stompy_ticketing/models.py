@@ -148,6 +148,7 @@ class TicketResponse(BaseModel):
     archived_at: Optional[float] = None
     history: List[TicketHistoryEntry] = Field(default_factory=list)
     links: List[TicketLinkResponse] = Field(default_factory=list)
+    context_links: List["ContextLinkResponse"] = Field(default_factory=list)
 
 
 class ContextLinkResponse(BaseModel):
@@ -160,6 +161,10 @@ class ContextLinkResponse(BaseModel):
     # Denormalized for display (fetched from ticket row)
     ticket_title: Optional[str] = None
     ticket_status: Optional[str] = None
+
+
+# Resolve forward reference for context_links in TicketResponse
+TicketResponse.model_rebuild()
 
 
 class TicketListResponse(BaseModel):
