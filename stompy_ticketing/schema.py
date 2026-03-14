@@ -173,6 +173,8 @@ def get_all_ticket_tables_sql(schema: str) -> sql.Composed:
         get_tickets_table_sql(schema)
         + get_ticket_history_table_sql(schema)
         + get_ticket_links_table_sql(schema)
+        + get_ticket_context_links_table_sql(schema)
         + get_tickets_indexes_sql(schema)
+        + get_ticket_context_links_indexes_sql(schema)
         + get_tickets_tsvector_trigger_sql(schema)
     )
