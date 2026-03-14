@@ -156,6 +156,12 @@ def register_ticketing_tools(
                 elif action == "update":
                     if not ticket_id:
                         return json.dumps({"error": "ticket_id is required for update"})
+                    if status:
+                        return json.dumps({
+                            "error": "Status changes require action=\"move\", not \"update\". "
+                            "Use: ticket(action=\"move\", ticket_id="
+                            f"{ticket_id}, status=\"{status}\")"
+                        })
                     tag_list = [t.strip() for t in tags.split(",")] if tags else None
                     data = TicketUpdate(
                         title=title,

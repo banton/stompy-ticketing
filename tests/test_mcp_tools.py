@@ -339,6 +339,63 @@ class TestSchemaResolution:
             assert call_args[0][1] == "resolved_schema"
 
 
+class TestUpdateActionRejectsStatus:
+    """Tests that ticket(action='update', status=...) returns an error."""
+
+    def _register_tools_with_mock_service(self, mock_svc):
+        """Register tools with a pre-configured mock TicketService."""
+        mcp = _make_mock_mcp()
+        check_project = MagicMock(return_value=None)
+        get_project = MagicMock(return_value="test-project")
+
+        @contextmanager
+        def db_ctx(project=None):
+            yield MagicMock()
+
+        with patch("stompy_ticketing.mcp_tools.TicketService", return_value=mock_svc):
+            register_ticketing_tools(
+                mcp_instance=mcp,
+                get_db_func=db_ctx,
+                check_project_func=check_project,
+                get_project_func=get_project,
+            )
+
+        return mcp._registered_tools
+
+    def test_update_with_status_returns_error(self):
+        """ticket(action='update', status='in_progress') should return error, not silently ignore."""
+        mock_svc = MagicMock()
+        tools = self._register_tools_with_mock_service(mock_svc)
+
+        ticket_fn = tools["ticket"]
+        raw = asyncio.get_event_loop().run_until_complete(
+            ticket_fn(action="update", ticket_id=1, status="in_progress")
+        )
+        data = _parse(raw)
+
+        assert "error" in data
+        assert "move" in data["error"].lower()
+        # Should NOT have called update_ticket
+        mock_svc.update_ticket.assert_not_called()
+
+    def test_update_without_status_proceeds_normally(self):
+        """ticket(action='update', title='New') without status should work normally."""
+        mock_svc = MagicMock()
+        mock_result = MagicMock()
+        mock_result.model_dump.return_value = {"id": 1, "title": "New", "status": "backlog"}
+        mock_svc.update_ticket.return_value = mock_result
+
+        tools = self._register_tools_with_mock_service(mock_svc)
+        ticket_fn = tools["ticket"]
+        raw = asyncio.get_event_loop().run_until_complete(
+            ticket_fn(action="update", ticket_id=1, title="New")
+        )
+        data = _parse(raw)
+
+        assert "error" not in data
+        mock_svc.update_ticket.assert_called_once()
+
+
 class TestTicketListPagination:
     """Tests for limit/offset pagination in the ticket tool's list action."""
 

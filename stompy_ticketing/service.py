@@ -791,8 +791,9 @@ class TicketService:
         Returns:
             OR-joined term string suitable for to_tsquery('english', ...).
         """
-        # Split on whitespace, filter empty tokens
-        terms = [t.strip() for t in query.split() if t.strip()]
+        # Strip wildcard characters, split on whitespace, filter empty tokens
+        cleaned = query.replace("*", "")
+        terms = [t.strip() for t in cleaned.split() if t.strip()]
         if not terms:
             return ""
         return " | ".join(terms)
@@ -857,8 +858,14 @@ class TicketService:
         cur = conn.cursor()
         tsquery_param = self._build_or_tsquery_param(query)
 
-        where_clauses = ["content_tsvector @@ to_tsquery('english', %s)"]
-        params: List[Any] = [tsquery_param]
+        use_fulltext = bool(tsquery_param)
+
+        where_clauses: List[str] = []
+        params: List[Any] = []
+
+        if use_fulltext:
+            where_clauses.append("content_tsvector @@ to_tsquery('english', %s)")
+            params.append(tsquery_param)
 
         if not include_archived:
             where_clauses.append("archived_at IS NULL")
@@ -871,18 +878,30 @@ class TicketService:
             where_clauses.append("status = %s")
             params.append(status_filter)
 
-        where_sql = "WHERE " + " AND ".join(where_clauses)
+        where_sql = ("WHERE " + " AND ".join(where_clauses)) if where_clauses else ""
 
-        cur.execute(
-            sql.SQL("""
-            SELECT *, ts_rank(content_tsvector, to_tsquery('english', %s)) as rank
-            FROM {}.tickets
-            {}
-            ORDER BY rank DESC
-            LIMIT %s
-            """).format(sql.Identifier(schema), sql.SQL(where_sql)),
-            [tsquery_param] + params + [limit],
-        )
+        if use_fulltext:
+            cur.execute(
+                sql.SQL("""
+                SELECT *, ts_rank(content_tsvector, to_tsquery('english', %s)) as rank
+                FROM {}.tickets
+                {}
+                ORDER BY rank DESC
+                LIMIT %s
+                """).format(sql.Identifier(schema), sql.SQL(where_sql)),
+                [tsquery_param] + params + [limit],
+            )
+        else:
+            cur.execute(
+                sql.SQL("""
+                SELECT *
+                FROM {}.tickets
+                {}
+                ORDER BY updated_at DESC
+                LIMIT %s
+                """).format(sql.Identifier(schema), sql.SQL(where_sql)),
+                params + [limit],
+            )
         rows = cur.fetchall()
 
         return SearchResult(

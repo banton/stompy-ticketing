@@ -930,6 +930,61 @@ class TestSearchTickets:
         assert result.tickets == []
         assert result.query == "nonexistent"
 
+    def test_should_fallback_to_unranked_query_for_wildcard(self):
+        """query='*' should skip tsvector and return all tickets ordered by updated_at."""
+        rows = [
+            _make_ticket_row(id=1, title="Bug one", type="bug"),
+            _make_ticket_row(id=2, title="Task two", type="task"),
+        ]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        result = self.service.search_tickets(conn, SCHEMA, "*")
+
+        assert result.total == 2
+        assert result.query == "*"
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
+        # Should NOT contain tsvector/tsquery clauses
+        assert "content_tsvector" not in executed_sql
+        assert "ts_rank" not in executed_sql
+        # Should order by updated_at DESC instead
+        assert "updated_at DESC" in executed_sql
+
+    def test_should_fallback_to_unranked_query_for_empty_string(self):
+        """Empty query should skip tsvector and return all tickets."""
+        rows = [
+            _make_ticket_row(id=1, title="Ticket A"),
+        ]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        result = self.service.search_tickets(conn, SCHEMA, "")
+
+        assert result.total == 1
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
+        assert "content_tsvector" not in executed_sql
+        assert "updated_at DESC" in executed_sql
+
+    def test_should_apply_filters_with_wildcard_query(self):
+        """query='*' with type_filter should still filter by type."""
+        rows = [
+            _make_ticket_row(id=1, title="Bug", type="bug"),
+        ]
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        result = self.service.search_tickets(
+            conn, SCHEMA, "*", type_filter="bug"
+        )
+
+        assert result.total == 1
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
+        assert "type = %s" in executed_sql
+        assert "content_tsvector" not in executed_sql
+        # Verify "bug" is in the params
+        executed_params = cur.execute.call_args[0][1]
+        assert "bug" in executed_params
+
     def test_should_build_or_tsquery_from_multi_word_input(self):
         """Each word in the query should be joined with | (OR) in the tsquery.
 
@@ -963,6 +1018,14 @@ class TestSearchTickets:
 
         assert result.total == 1
         assert result.query == "dogfood"
+
+    def test_should_strip_wildcard_chars_in_tsquery_builder(self):
+        """_build_or_tsquery_param should strip '*' characters."""
+        result = TicketService._build_or_tsquery_param("*")
+        assert result == ""
+
+        result2 = TicketService._build_or_tsquery_param("bug *")
+        assert result2 == "bug"
 
     def test_should_strip_extra_whitespace_from_query_terms(self):
         """Extra whitespace in query should be handled gracefully."""
