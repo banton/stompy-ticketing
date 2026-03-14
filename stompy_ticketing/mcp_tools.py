@@ -453,24 +453,43 @@ def register_ticketing_tools(
         status: Annotated[Optional[str], "Filter by status"] = None,
         limit: Annotated[int, "Max results"] = 20,
         include_archived: Annotated[bool, "Include archived tickets"] = False,
+        regex: Annotated[str, "Post-filter results by content using Python regex (case-insensitive). E.g. 'conflict.*false', 'MUST.*deploy'"] = "",
         project: Annotated[Optional[str], "Project name"] = None,
     ) -> str:
-        """Full-text search (BM25) over tickets. Excludes archived by default."""
+        """Full-text search (BM25) over tickets. Excludes archived by default. Use regex for pattern matching on results."""
         project_check = check_project_func(project)
         if project_check:
             return project_check
 
+        # Validate regex early
+        compiled_regex = None
+        if regex:
+            import re as _re
+            if len(regex) > 500:
+                return json.dumps({"error": "Regex pattern too long (max 500 chars)"})
+            try:
+                compiled_regex = _re.compile(regex, _re.IGNORECASE)
+            except _re.error as exc:
+                return json.dumps({"error": f"Invalid regex pattern: {exc}"})
+
         try:
             project_name = get_project_func(project)
+            fetch_limit = limit * 3 if compiled_regex else limit
             with get_db_func(project) as conn:
                 schema = _get_schema(project_name)
                 result = service.search_tickets(
                     conn, schema, query,
                     type_filter=type,
                     status_filter=status,
-                    limit=limit,
+                    limit=fetch_limit,
                     include_archived=include_archived,
                 )
+                if compiled_regex and result.tickets:
+                    result.tickets = [
+                        t for t in result.tickets
+                        if compiled_regex.search(t.title or "") or compiled_regex.search(t.description or "")
+                    ][:limit]
+                    result.total = len(result.tickets)
                 return _safe_json(result)
 
         except Exception as e:
