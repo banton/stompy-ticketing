@@ -1043,6 +1043,123 @@ class TestSearchTickets:
 
 
 # --------------------------------------------------------------------------- #
+# Backfill NULL tsvectors tests                                                #
+# --------------------------------------------------------------------------- #
+
+
+class TestBackfillNullTsvectors:
+    """Tests for _backfill_null_tsvectors lazy backfill."""
+
+    def setup_method(self):
+        self.service = TicketService()
+
+    def test_should_update_null_tsvector_rows(self):
+        """Backfill should UPDATE tickets with NULL content_tsvector."""
+        conn, cur = _mock_conn_and_cursor()
+        cur.rowcount = 5
+
+        count = self.service._backfill_null_tsvectors(conn, SCHEMA)
+
+        assert count == 5
+        conn.commit.assert_called_once()
+        # Verify the SQL targets the correct schema
+        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
+        assert SCHEMA in executed_sql
+        assert "content_tsvector IS NULL" in executed_sql
+
+    def test_should_not_commit_when_zero_rows(self):
+        """No commit needed when nothing to backfill."""
+        conn, cur = _mock_conn_and_cursor()
+        cur.rowcount = 0
+
+        count = self.service._backfill_null_tsvectors(conn, SCHEMA)
+
+        assert count == 0
+        conn.commit.assert_not_called()
+
+    def test_should_respect_limit_param(self):
+        """Limit parameter should be passed to the SQL query."""
+        conn, cur = _mock_conn_and_cursor()
+        cur.rowcount = 3
+
+        self.service._backfill_null_tsvectors(conn, SCHEMA, limit=50)
+
+        executed_params = cur.execute.call_args[0][1]
+        assert executed_params == (50,)
+
+
+class TestSearchTicketsBackfillIntegration:
+    """Test that search_tickets calls backfill before querying."""
+
+    def setup_method(self):
+        self.service = TicketService()
+        self.service.archive_stale_tickets = MagicMock(return_value=0)
+        self.service._backfill_null_tsvectors = MagicMock(return_value=0)
+
+    def test_should_call_backfill_before_search(self):
+        """search_tickets should lazily backfill NULL tsvectors."""
+        rows = []
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        self.service.search_tickets(conn, SCHEMA, "test query")
+
+        self.service._backfill_null_tsvectors.assert_called_once_with(conn, SCHEMA)
+
+    def test_should_not_fail_if_backfill_errors(self):
+        """Backfill errors should be silently caught."""
+        self.service._backfill_null_tsvectors = MagicMock(
+            side_effect=Exception("DB error")
+        )
+        rows = []
+        conn, cur = _mock_conn_and_cursor(rows=rows)
+        cur.fetchall.return_value = rows
+
+        # Should not raise
+        result = self.service.search_tickets(conn, SCHEMA, "test query")
+        assert result.total == 0
+
+
+# --------------------------------------------------------------------------- #
+# Sanitize tsquery special characters                                          #
+# --------------------------------------------------------------------------- #
+
+
+class TestTsquerySanitization:
+    """Tests for _build_or_tsquery_param handling of special characters."""
+
+    def test_should_sanitize_hyphens(self):
+        """Hyphens in terms like 'multi-user' should be split into separate terms."""
+        result = TicketService._build_or_tsquery_param("multi-user collaboration")
+        assert result == "multi | user | collaboration"
+
+    def test_should_sanitize_colons_and_parens(self):
+        """Colons and parentheses should be stripped."""
+        result = TicketService._build_or_tsquery_param("type:bug (urgent)")
+        assert result == "type | bug | urgent"
+
+    def test_should_sanitize_ampersands_and_pipes(self):
+        """tsquery operators in raw input should be stripped."""
+        result = TicketService._build_or_tsquery_param("foo & bar | baz")
+        assert result == "foo | bar | baz"
+
+    def test_should_sanitize_exclamation_and_quotes(self):
+        """Negation and quote characters should be stripped."""
+        result = TicketService._build_or_tsquery_param('!important "exact match"')
+        assert result == "important | exact | match"
+
+    def test_should_handle_all_special_chars(self):
+        """A query of only special characters should return empty."""
+        result = TicketService._build_or_tsquery_param("!@#$%^&*()")
+        assert result == ""
+
+    def test_should_preserve_underscores(self):
+        """Underscores in identifiers should be preserved (\\w includes _)."""
+        result = TicketService._build_or_tsquery_param("my_function test")
+        assert result == "my_function | test"
+
+
+# --------------------------------------------------------------------------- #
 # List tickets search filter tests                                             #
 # --------------------------------------------------------------------------- #
 
