@@ -8,6 +8,7 @@ Follows the ContextService pattern from dementia-production:
 
 import hashlib
 import json
+import re
 import time
 from typing import Any, Callable, Dict, List, Optional, Protocol, Tuple
 
@@ -791,8 +792,10 @@ class TicketService:
         Returns:
             OR-joined term string suitable for to_tsquery('english', ...).
         """
-        # Strip wildcard characters, split on whitespace, filter empty tokens
+        # Strip wildcard characters and tsquery-breaking chars (hyphens, colons,
+        # parens, etc.), then split on whitespace and filter empty tokens.
         cleaned = query.replace("*", "")
+        cleaned = re.sub(r"[^\w\s]", " ", cleaned)
         terms = [t.strip() for t in cleaned.split() if t.strip()]
         if not terms:
             return ""
@@ -820,6 +823,39 @@ class TicketService:
             ).format(sql.Identifier(schema), where),
         )
         return [{"tag": r["tag"], "count": r["count"]} for r in cur.fetchall()]
+
+    def _backfill_null_tsvectors(
+        self, conn: DBConnection, schema: str, limit: int = 200
+    ) -> int:
+        """Backfill NULL content_tsvector rows from title+description.
+
+        Tickets created before the tsvector trigger migration have NULL
+        content_tsvector, making them invisible to BM25 search.  This lazily
+        fixes up to *limit* rows per call (same pattern as
+        hybrid_search_service._backfill_null_tsvectors).
+
+        Returns:
+            Number of rows backfilled.
+        """
+        cur = conn.cursor()
+        cur.execute(
+            sql.SQL("""
+                UPDATE {schema}.tickets
+                SET content_tsvector = to_tsvector('english',
+                    coalesce(title, '') || ' ' || coalesce(description, ''))
+                WHERE id IN (
+                    SELECT id FROM {schema}.tickets
+                    WHERE content_tsvector IS NULL
+                      AND (title IS NOT NULL OR description IS NOT NULL)
+                    LIMIT %s
+                )
+            """).format(schema=sql.Identifier(schema)),
+            (limit,),
+        )
+        count = cur.rowcount or 0
+        if count > 0:
+            conn.commit()
+        return count
 
     def search_tickets(
         self,
@@ -852,6 +888,12 @@ class TicketService:
         # Lazy archive trigger
         try:
             self.archive_stale_tickets(conn, schema)
+        except Exception:
+            pass
+
+        # Lazy backfill for NULL tsvectors (handles pre-trigger tickets)
+        try:
+            self._backfill_null_tsvectors(conn, schema)
         except Exception:
             pass
 
