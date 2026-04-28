@@ -47,6 +47,17 @@ class InvalidTransitionError(Exception):
     pass
 
 
+class LinkAlreadyExistsError(ValueError):
+    """Raised when add_link/add_context_link hits a duplicate UNIQUE constraint.
+
+    Subclasses ValueError so existing callers that catch ValueError keep
+    working; new callers can catch this specifically to return a structured
+    `ALREADY_LINKED` error code instead of a raw IntegrityError.
+    """
+
+    pass
+
+
 # Each type maps to: initial status, terminal statuses, and allowed transitions
 STATE_MACHINES: Dict[str, Dict[str, Any]] = {
     "task": {
@@ -1130,6 +1141,7 @@ class TicketService:
                             count=total_in_col,
                             compact_tickets=compact_tickets,
                             has_more=has_more,
+                            truncated_count=total_in_col - len(visible_rows),
                         )
                     )
                 else:
@@ -1145,6 +1157,7 @@ class TicketService:
                             count=total_in_col,
                             tickets=tickets,
                             has_more=has_more,
+                            truncated_count=total_in_col - len(visible_rows),
                         )
                     )
 
@@ -1177,6 +1190,7 @@ class TicketService:
                                 count=total_in_col,
                                 compact_tickets=compact_tickets,
                                 has_more=has_more,
+                                truncated_count=total_in_col - len(visible_rows),
                             )
                         )
                     else:
@@ -1192,10 +1206,29 @@ class TicketService:
                                 count=total_in_col,
                                 tickets=tickets,
                                 has_more=has_more,
+                                truncated_count=total_in_col - len(visible_rows),
                             )
                         )
 
             total = len(rows)
+
+            # Bug #173: populate per-card links on kanban view (not compact/summary).
+            # Single bulk query for all visible ticket IDs avoids N+1.
+            if not is_compact:
+                visible_ids = [t.id for col in columns for t in col.tickets]
+                if visible_ids:
+                    try:
+                        link_map = self._get_links_for_tickets_bulk(cur, schema, visible_ids)
+                        ctx_link_map = self._get_context_links_for_tickets_bulk(
+                            cur, schema, visible_ids
+                        )
+                    except Exception:
+                        link_map = {}
+                        ctx_link_map = {}
+                    for col in columns:
+                        for t in col.tickets:
+                            t.links = link_map.get(t.id, [])
+                            t.context_links = ctx_link_map.get(t.id, [])
 
         return BoardView(
             columns=columns,
@@ -1560,7 +1593,7 @@ class TicketService:
             return self._link_row_to_response(row)
         except IntegrityError:
             conn.rollback()
-            raise ValueError(
+            raise LinkAlreadyExistsError(
                 f"Link already exists between ticket #{source_id} and #{data.target_id}"
             )
         except Exception:
@@ -1672,7 +1705,7 @@ class TicketService:
             )
         except IntegrityError:
             conn.rollback()
-            raise ValueError(
+            raise LinkAlreadyExistsError(
                 f"Context link already exists: ticket #{ticket_id} ↔ {data.context_label}"
             )
         except Exception:
@@ -1826,6 +1859,83 @@ class TicketService:
             )
             for h in cur.fetchall()
         ]
+
+    def _get_links_for_tickets_bulk(
+        self, cur: Any, schema: str, ticket_ids: List[int]
+    ) -> Dict[int, List[TicketLinkResponse]]:
+        """Bulk-fetch ticket↔ticket links for many tickets in a single query.
+
+        Returns a mapping of ticket_id → list of links. A link is included
+        under whichever side of the relationship matches an input id; if both
+        sides match, it appears under both.
+        """
+        if not ticket_ids:
+            return {}
+        sch = sql.Identifier(schema)
+        placeholders = sql.SQL(", ").join(sql.Placeholder() * len(ticket_ids))
+        cur.execute(
+            sql.SQL("""
+            SELECT tl.*, t.title as target_title, t.status as target_status
+            FROM {}.ticket_links tl
+            JOIN {}.tickets t ON t.id = tl.target_id
+            WHERE tl.source_id IN ({ph})
+            UNION ALL
+            SELECT tl.*, t.title as target_title, t.status as target_status
+            FROM {}.ticket_links tl
+            JOIN {}.tickets t ON t.id = tl.source_id
+            WHERE tl.target_id IN ({ph})
+            """).format(sch, sch, sch, sch, ph=placeholders),
+            ticket_ids + ticket_ids,
+        )
+        result: Dict[int, List[TicketLinkResponse]] = {tid: [] for tid in ticket_ids}
+        for row in cur.fetchall():
+            link = self._link_row_to_response(row)
+            # Attribute the link to the input ticket on whichever side matches.
+            if link.source_id in result:
+                result[link.source_id].append(link)
+            elif link.target_id in result:
+                result[link.target_id].append(link)
+        return result
+
+    def _get_context_links_for_tickets_bulk(
+        self, cur: Any, schema: str, ticket_ids: List[int]
+    ) -> Dict[int, List[ContextLinkResponse]]:
+        """Bulk-fetch ticket↔context links for many tickets in a single query."""
+        if not ticket_ids:
+            return {}
+        sch = sql.Identifier(schema)
+        placeholders = sql.SQL(", ").join(sql.Placeholder() * len(ticket_ids))
+        try:
+            cur.execute(
+                sql.SQL("""
+                SELECT tcl.*, t.title AS ticket_title, t.status AS ticket_status
+                FROM {}.ticket_context_links tcl
+                JOIN {}.tickets t ON t.id = tcl.ticket_id
+                WHERE tcl.ticket_id IN ({ph})
+                ORDER BY tcl.created_at DESC
+                """).format(sch, sch, ph=placeholders),
+                ticket_ids,
+            )
+        except Exception:
+            # Table may not exist yet on older schemas
+            return {tid: [] for tid in ticket_ids}
+        result: Dict[int, List[ContextLinkResponse]] = {tid: [] for tid in ticket_ids}
+        for r in cur.fetchall():
+            tid = r["ticket_id"]
+            if tid in result:
+                result[tid].append(
+                    ContextLinkResponse(
+                        id=r["id"],
+                        ticket_id=tid,
+                        context_label=r["context_label"],
+                        context_version=r["context_version"],
+                        link_type=r["link_type"],
+                        created_at=r.get("created_at"),
+                        ticket_title=r.get("ticket_title"),
+                        ticket_status=r.get("ticket_status"),
+                    )
+                )
+        return result
 
     def _get_links_for_ticket(
         self, cur: Any, schema: str, ticket_id: int

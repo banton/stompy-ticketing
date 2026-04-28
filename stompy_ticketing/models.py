@@ -194,6 +194,9 @@ class BoardColumn(BaseModel):
     tickets: List[TicketResponse] = Field(default_factory=list)
     compact_tickets: List[CompactTicket] = Field(default_factory=list)
     has_more: bool = False
+    # Number of tickets in this column not included in the response due to
+    # the per-column limit. count == len(tickets) + truncated_count.
+    truncated_count: int = 0
 
 
 class BoardView(BaseModel):

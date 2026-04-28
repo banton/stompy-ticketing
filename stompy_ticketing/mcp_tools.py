@@ -13,7 +13,10 @@ Stompy internals.
 
 import fnmatch
 import json
+import time as _time
 from typing import Annotated, Any, Callable, List, Literal, Optional
+
+from psycopg2 import OperationalError as _OperationalError
 
 from stompy_ticketing.models import (
     ContextLinkCreate,
@@ -26,7 +29,11 @@ from stompy_ticketing.models import (
     TicketType,
     TicketUpdate,
 )
-from stompy_ticketing.service import InvalidTransitionError, TicketService
+from stompy_ticketing.service import (
+    InvalidTransitionError,
+    LinkAlreadyExistsError,
+    TicketService,
+)
 
 
 def _toon_encode(data):
@@ -98,7 +105,13 @@ def register_ticketing_tools(
         ticket_id: Annotated[Optional[int], "Ticket ID (get/update/move/close)"] = None,
         ticket_ids: Annotated[Optional[str], "Comma-separated IDs (batch_move/batch_close)"] = None,
         confirm: Annotated[bool, "Execute batch operation (default: preview only)"] = False,
-        resolution: Annotated[Optional[str], "Terminal status for close (e.g. 'resolved', 'wont_fix')"] = None,
+        resolution: Annotated[
+            Optional[str],
+            "Terminal status enum value for close (NOT free-text). "
+            "Per type: task→done|cancelled, bug→resolved|wont_fix, "
+            "feature→shipped|rejected, decision→decided|deferred. "
+            "Defaults to the positive terminal (done/resolved/shipped/decided)."
+        ] = None,
         limit: Annotated[Optional[int], "Max tickets for list (default 20, max 200)"] = None,
         offset: Annotated[Optional[int], "Skip N tickets for list pagination"] = None,
         include_archived: Annotated[bool, "Include archived tickets in list"] = False,
@@ -230,6 +243,17 @@ def register_ticketing_tools(
                             if fnmatch.fnmatch(t.title if hasattr(t, "title") else t.get("title", ""), grep)
                         ]
                         result.total = len(result.tickets)
+                        # Recompute aggregates over the grep-filtered set so
+                        # by_status / by_type match what the caller sees.
+                        result.by_status = {}
+                        result.by_type = {}
+                        for t in result.tickets:
+                            t_status = t.status if hasattr(t, "status") else t.get("status")
+                            t_type = t.type if hasattr(t, "type") else t.get("type")
+                            if t_status:
+                                result.by_status[t_status] = result.by_status.get(t_status, 0) + 1
+                            if t_type:
+                                result.by_type[t_type] = result.by_type.get(t_type, 0) + 1
                     return _safe_json(result)
 
                 elif action == "list_tags":
@@ -405,6 +429,10 @@ def register_ticketing_tools(
                         {"error": f"Unknown action: {action}", "valid_actions": ["add", "remove", "list"]}
                     )
 
+        except LinkAlreadyExistsError as e:
+            return json.dumps(
+                {"error": str(e), "error_type": "ALREADY_LINKED"}
+            )
         except Exception as e:
             return json.dumps(
                 {"error": f"Link operation failed: {str(e)[:200]}", "error_type": e.__class__.__name__}
@@ -433,18 +461,31 @@ def register_ticketing_tools(
 
         try:
             project_name = get_project_func(project)
-            with get_db_func(project) as conn:
-                schema = _get_schema(project_name)
-                result = service.board_view(
-                    conn, schema,
-                    type_filter=type,
-                    view=view,
-                    status_filter=status,
-                    include_terminal=include_terminal,
-                    include_archived=include_archived,
-                    limit=limit,
-                )
-                return _safe_json(result)
+            # One retry on Neon idle-conn drop (SSL connection closed).
+            # Context manager is re-entered to obtain a fresh connection.
+            last_op_error: Optional[Exception] = None
+            for attempt in range(2):
+                try:
+                    with get_db_func(project) as conn:
+                        schema = _get_schema(project_name)
+                        result = service.board_view(
+                            conn, schema,
+                            type_filter=type,
+                            view=view,
+                            status_filter=status,
+                            include_terminal=include_terminal,
+                            include_archived=include_archived,
+                            limit=limit,
+                        )
+                        return _safe_json(result)
+                except _OperationalError as op_err:
+                    last_op_error = op_err
+                    if attempt == 0:
+                        _time.sleep(0.1)
+                        continue
+                    raise
+            # Defensive: should not reach here (loop either returns or raises)
+            raise last_op_error or RuntimeError("board_view retry loop fell through")
 
         except Exception as e:
             return json.dumps(

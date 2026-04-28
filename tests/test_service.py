@@ -735,9 +735,11 @@ class TestBoardView:
         result = self.service.board_view(conn, SCHEMA, status_filter="triage")
 
         assert result.total == 2
-        # Verify the SQL included the status filter
-        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
-        assert "status = %s" in executed_sql
+        # Verify the main board SQL included the status filter (board_view
+        # also issues a bulk link-fetch query for #173 — find the right call).
+        all_sqls = [_sql_to_str(c[0][0]) for c in cur.execute.call_args_list]
+        board_sqls = [s for s in all_sqls if "FROM test_project.tickets" in s and "ticket_links" not in s]
+        assert any("status = %s" in s for s in board_sqls)
 
     def test_combined_type_and_status_filter(self):
         rows = [
@@ -751,9 +753,10 @@ class TestBoardView:
         )
 
         assert result.total == 1
-        executed_sql = _sql_to_str(cur.execute.call_args[0][0])
-        assert "type = %s" in executed_sql
-        assert "status = %s" in executed_sql
+        all_sqls = [_sql_to_str(c[0][0]) for c in cur.execute.call_args_list]
+        board_sqls = [s for s in all_sqls if "FROM test_project.tickets" in s and "ticket_links" not in s]
+        assert any("type = %s" in s for s in board_sqls)
+        assert any("status = %s" in s for s in board_sqls)
 
     def test_detail_view_aliases_to_kanban(self):
         rows = [
