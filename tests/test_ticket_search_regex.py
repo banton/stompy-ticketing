@@ -7,11 +7,10 @@ Tests cover:
 - Matching on title and description
 """
 
-import re
-
 import pytest
 
 from stompy_ticketing.models import TicketResponse, SearchResult
+from stompy_ticketing.safe_regex import compile_search_regex
 
 
 # =============================================================================
@@ -35,10 +34,13 @@ def _make_ticket(id, title, description="", type="task", status="backlog"):
 
 
 def _apply_ticket_regex(tickets, regex_pattern, limit=20):
-    """Replicate the regex filter logic from mcp_tools.py ticket_search."""
+    """Compatibility examples for the production compiler.
+
+    Actual registered-handler coverage lives in test_bounded_regex_2077.py.
+    """
     if not regex_pattern:
         return tickets
-    compiled = re.compile(regex_pattern, re.IGNORECASE)
+    compiled = compile_search_regex(regex_pattern)
     return [
         t for t in tickets
         if compiled.search(t.title or "") or compiled.search(t.description or "")
@@ -129,10 +131,10 @@ class TestTicketSearchRegex:
 
 class TestTicketRegexValidation:
     def test_should_reject_invalid_regex(self):
-        with pytest.raises(re.error):
-            re.compile("[invalid")
+        with pytest.raises(ValueError):
+            compile_search_regex("[invalid")
 
     def test_should_accept_valid_complex_pattern(self):
-        compiled = re.compile(r"conflict.*(?:false|negative)", re.IGNORECASE)
+        compiled = compile_search_regex(r"conflict.*(?:false|negative)")
         assert compiled.search("conflict detection false positives")
         assert not compiled.search("simple search query")
