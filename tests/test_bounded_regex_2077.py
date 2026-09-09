@@ -17,6 +17,12 @@ from stompy_ticketing.safe_regex import compile_search_regex
 FIXED_TIME = 1700000000.0
 
 
+@pytest.mark.parametrize("pattern", [None, 123, ["a"], b"a"])
+def test_non_string_compiler_input_has_documented_refusal(pattern):
+    with pytest.raises(ValueError, match="^Regex pattern must be a string$"):
+        compile_search_regex(pattern)
+
+
 def test_compiler_limits_and_unicode_contract():
     compiled = compile_search_regex("x" * 500)
     assert compiled.options.max_mem == 1024 * 1024
