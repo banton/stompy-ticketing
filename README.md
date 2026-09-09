@@ -178,6 +178,15 @@ ticket_board(view="kanban", type="bug")
 
 ### ticket_search
 
+The `regex` post-filter uses **RE2 syntax** (case-insensitive, max 500 characters),
+not Python `re`. Look-around and backreferences are refused with an error; there
+is no backtracking fallback. RE2 character classes such as `\w` and `\d` are
+ASCII; use Unicode properties such as `\p{L}` for Unicode letters. Use `\z`
+instead of Python's `\Z`. Ordinary alternation, groups, and repetition work.
+The filter still matches title **or** description and preserves card/full output.
+Engine memory is limited to 1 MiB per compiled pattern; this does not bound
+database retrieval volume or promise a wall-clock deadline.
+
 Full-text search using PostgreSQL tsvector with BM25 ranking:
 
 ```python

@@ -19,6 +19,7 @@ from typing import Annotated, Any, Callable, List, Literal, Optional, Union
 
 from stompy_ticketing.errors import mcp_error, not_found_error, recoverable_error
 from stompy_ticketing.refs import TicketRefError, coerce_ticket_ref, format_display_id
+from stompy_ticketing.safe_regex import compile_search_regex
 
 from psycopg2 import OperationalError as _OperationalError
 
@@ -868,7 +869,7 @@ def register_ticketing_tools(
         status: Annotated[Optional[str], "Filter by status"] = None,
         limit: Annotated[int, "Max results"] = 20,
         include_archived: Annotated[bool, "Include archived tickets"] = False,
-        regex: Annotated[str, "Post-filter the RESULT SET by Python regex (case-insensitive) matched against each hit's title and description body — it narrows which tickets come back, not what each row contains. E.g. 'conflict.*false', 'MUST.*deploy'"] = "",
+        regex: Annotated[str, "Post-filter the RESULT SET by RE2 regex (case-insensitive; no look-around/backreferences) matched against each hit's title and description body. E.g. 'conflict.*false', 'MUST.*deploy'"] = "",
         project: Annotated[Optional[str], "Project name"] = None,
         fields: Annotated[
             Optional[Literal["card", "full"]],
@@ -883,13 +884,10 @@ def register_ticketing_tools(
         # Validate regex early
         compiled_regex = None
         if regex:
-            import re as _re
-            if len(regex) > 500:
-                return json.dumps({"error": "Regex pattern too long (max 500 chars)"})
             try:
-                compiled_regex = _re.compile(regex, _re.IGNORECASE)
-            except _re.error as exc:
-                return json.dumps({"error": f"Invalid regex pattern: {exc}"})
+                compiled_regex = compile_search_regex(regex)
+            except ValueError as exc:
+                return json.dumps({"error": str(exc)})
 
         _sr_tok = None
         try:
